@@ -572,41 +572,41 @@ function startTimer(entryIso) {
   }, 1000)
 }
 
-async function requestGps() {
+function requestGps() {
   gpsLoading.value = true
   gpsError.value = ''
 
-  // Load map settings (default_lat/lng, dll) DULU sebelum set GPS
-  await fetchMapSettings()
-
-  // Debug mode: skip real GPS, PAKAI default_lat/lng dari settings
   const ticketId = route.query.t
+
+  // Debug mode: skip real GPS
   if (ticketId === 'debug') {
-    fakeGps.value.active = true
+    // fetchMapSettings dulu oke karena debug bukan real gesture
+    fetchMapSettings().then(async () => {
+      fakeGps.value.active = true
 
-    // PAKSA ambil dari DB langsung
-    const { data: coordSettings } = await supabase
-      .from('settings')
-      .select('key, value')
-      .in('key', ['default_lat', 'default_lng'])
+      const { data: coordSettings } = await supabase
+        .from('settings')
+        .select('key, value')
+        .in('key', ['default_lat', 'default_lng'])
 
-    let defLat = -7.2650876
-    let defLng = 112.783217
-    if (coordSettings) {
-      coordSettings.forEach(s => {
-        if (s.key === 'default_lat' && s.value) defLat = parseFloat(s.value)
-        if (s.key === 'default_lng' && s.value) defLng = parseFloat(s.value)
-      })
-    }
+      let defLat = -7.2650876
+      let defLng = 112.783217
+      if (coordSettings) {
+        coordSettings.forEach(s => {
+          if (s.key === 'default_lat' && s.value) defLat = parseFloat(s.value)
+          if (s.key === 'default_lng' && s.value) defLng = parseFloat(s.value)
+        })
+      }
 
-    fakeGps.value.lat = defLat
-    fakeGps.value.lng = defLng
-    userLat.value = defLat
-    userLng.value = defLng
+      fakeGps.value.lat = defLat
+      fakeGps.value.lng = defLng
+      userLat.value = defLat
+      userLng.value = defLng
 
-    gpsGranted.value = true
-    gpsLoading.value = false
-    loadTicket()
+      gpsGranted.value = true
+      gpsLoading.value = false
+      loadTicket()
+    })
     return
   }
 
@@ -617,14 +617,17 @@ async function requestGps() {
     return
   }
 
-  // WAJIB dapet posisi real - panggil LANGSUNG dari click (Safari requirement)
+  // ⚠️ PENTING UNTUK SAFARI: getCurrentPosition() HARUS dipanggil SYNCHRONOUS
+  // langsung dari event click, TANPA ada await apapun sebelumnya.
+  // Kalau ada await sebelum ini, Safari akan diam-diam menolak tanpa popup permission.
   navigator.geolocation.getCurrentPosition(
     function onSuccess(pos) {
       userLat.value = pos.coords.latitude
       userLng.value = pos.coords.longitude
       gpsGranted.value = true
       gpsLoading.value = false
-      loadTicket()
+      // Fetch settings setelah GPS berhasil, urutan sudah aman
+      fetchMapSettings().then(() => loadTicket())
     },
     function onError(err) {
       gpsLoading.value = false
