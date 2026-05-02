@@ -955,6 +955,12 @@
           </div>
           <div class="form-actions">
             <button type="button" class="btn-cancel" @click="showSlotModal = false">Batal</button>
+            <button v-if="editingSlot" type="button" class="btn-delete-slot" @click="deleteSlot">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+              Hapus Slot
+            </button>
             <button type="submit" class="btn-save">{{ editingSlot ? 'Update' : 'Simpan' }}</button>
           </div>
         </form>
@@ -2050,22 +2056,28 @@ async function saveArea() {
   }
 }
 
-async function deleteArea(area) {
-  if (!confirm(`Hapus area "${area.name}"? Semua slot di area ini akan dihapus.`)) return
-
-  try {
-    const { error } = await supabase
-      .from('parking_areas')
-      .delete()
-      .eq('id', area.id)
-
-    if (error) throw error
-    fetchAreas()
-    fetchSlots()
-  } catch (err) {
-    console.error('Delete area error:', err)
-    alert('Gagal menghapus area: ' + err.message)
-  }
+function deleteArea(area) {
+  showConfirm({
+    title: `Hapus Area "${area.name}"`,
+    message: `Hapus permanen area <b>${area.name}</b>?<br><br>Semua slot di area ini juga akan ikut terhapus.`,
+    confirmText: 'Hapus Area',
+    danger: true,
+    onConfirm: async () => {
+      try {
+        const { error } = await supabase
+          .from('parking_areas')
+          .delete()
+          .eq('id', area.id)
+        if (error) throw error
+        showToast(`✅ Area "${area.name}" berhasil dihapus`, 'success')
+        fetchAreas()
+        fetchSlots()
+      } catch (err) {
+        console.error('Delete area error:', err)
+        showToast('❌ Gagal menghapus area: ' + err.message, 'error')
+      }
+    }
+  })
 }
 
 // Slot Management
@@ -2138,6 +2150,34 @@ async function saveSlot() {
     console.error('Save slot error:', err)
     showToast('❌ Gagal menyimpan slot: ' + err.message, 'error')
   }
+}
+
+async function deleteSlot() {
+  if (!editingSlot.value) return
+  const slotName = editingSlot.value.name
+  showSlotModal.value = false
+  showConfirm({
+    title: `Hapus Slot ${slotName}`,
+    message: `Hapus permanen slot <b>${slotName}</b>?<br><br>Data GPS, MQTT topic, dan semua konfigurasi slot ini akan hilang.`,
+    confirmText: 'Hapus',
+    danger: true,
+    onConfirm: async () => {
+      try {
+        const { error } = await supabase
+          .from('parking_slots')
+          .delete()
+          .eq('id', editingSlot.value.id)
+        if (error) throw error
+        editingSlot.value = null
+        slotForm.value = { name: '', status: 'available', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 }
+        showToast(`✅ Slot ${slotName} berhasil dihapus`, 'success')
+        fetchSlots()
+        calculateStats()
+      } catch (err) {
+        showToast('❌ Gagal hapus slot: ' + err.message, 'error')
+      }
+    }
+  })
 }
 
 // Debug mode: toggle slot status manual
@@ -2372,11 +2412,19 @@ async function saveGate() {
   }
 }
 
-async function deleteGate(gate) {
-  if (!confirm(`Hapus Gate ${gate.gate_number} - ${gate.name}?`)) return
-  await supabase.from('exit_gates').delete().eq('id', gate.id)
-  fetchGates()
-  showToast('Gate dihapus', 'success')
+function deleteGate(gate) {
+  showConfirm({
+    title: `Hapus Gate ${gate.gate_number}`,
+    message: `Hapus permanen gate <b>${gate.gate_number} - ${gate.name}</b>?`,
+    confirmText: 'Hapus Gate',
+    danger: true,
+    onConfirm: async () => {
+      const { error } = await supabase.from('exit_gates').delete().eq('id', gate.id)
+      if (error) { showToast('❌ Gagal hapus gate: ' + error.message, 'error'); return }
+      fetchGates()
+      showToast('✅ Gate dihapus', 'success')
+    }
+  })
 }
 
 function openAddGateAccount() {
@@ -2399,11 +2447,19 @@ async function saveGateAccount() {
   }
 }
 
-async function deleteGateAccount(acc) {
-  if (!confirm(`Hapus akun "${acc.username}"?`)) return
-  await supabase.from('gate_accounts').delete().eq('id', acc.id)
-  fetchGateAccounts()
-  showToast('Akun dihapus', 'success')
+function deleteGateAccount(acc) {
+  showConfirm({
+    title: `Hapus Akun "${acc.username}"`,
+    message: `Hapus permanen akun petugas <b>${acc.username}</b>? Akun ini tidak bisa login lagi.`,
+    confirmText: 'Hapus Akun',
+    danger: true,
+    onConfirm: async () => {
+      const { error } = await supabase.from('gate_accounts').delete().eq('id', acc.id)
+      if (error) { showToast('❌ Gagal hapus akun: ' + error.message, 'error'); return }
+      fetchGateAccounts()
+      showToast('✅ Akun dihapus', 'success')
+    }
+  })
 }
 
 // ===== LIFECYCLE =====
@@ -3493,6 +3549,30 @@ onUnmounted(() => {
   justify-content: flex-end;
   margin-top: 24px;
 }
+
+/* Tombol hapus slot digeser ke kiri */
+.form-actions .btn-delete-slot {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1.5px solid rgba(239,68,68,0.4);
+  background: rgba(239,68,68,0.08);
+  color: #f87171;
+  transition: all 0.2s;
+}
+
+.form-actions .btn-delete-slot:hover {
+  background: rgba(239,68,68,0.18);
+  border-color: #ef4444;
+  color: #fca5a5;
+}
+
 
 .btn-cancel,
 .btn-save {
