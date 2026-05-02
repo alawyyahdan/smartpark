@@ -617,17 +617,19 @@ function requestGps() {
     return
   }
 
-  // ⚠️ PENTING UNTUK SAFARI: getCurrentPosition() HARUS dipanggil SYNCHRONOUS
-  // langsung dari event click, TANPA ada await apapun sebelumnya.
-  // Kalau ada await sebelum ini, Safari akan diam-diam menolak tanpa popup permission.
+  // ⚠️ SAFARI FIX: getCurrentPosition() HARUS dipanggil SYNCHRONOUS (tanpa await sebelumnya).
+  // Trik: kita mulai fetchMapSettings() paralel di sini (tanpa await),
+  // simpan Promise-nya, lalu tunggu keduanya selesai di dalam onSuccess.
+  const settingsPromise = fetchMapSettings()
+
   navigator.geolocation.getCurrentPosition(
     function onSuccess(pos) {
       userLat.value = pos.coords.latitude
       userLng.value = pos.coords.longitude
       gpsGranted.value = true
       gpsLoading.value = false
-      // Fetch settings setelah GPS berhasil, urutan sudah aman
-      fetchMapSettings().then(() => loadTicket())
+      // Tunggu settings selesai dulu (biasanya udah selesai duluan), baru loadTicket
+      settingsPromise.then(() => loadTicket())
     },
     function onError(err) {
       gpsLoading.value = false
