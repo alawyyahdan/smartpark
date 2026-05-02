@@ -8,7 +8,8 @@
     "dev:web": "vite",
     "dev:mqtt": "node --no-warnings mqtt-bridge/bridge.cjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "concurrently --names \"WEB,MQTT\" --prefix-colors \"magenta,yellow\" \"npm run preview -- --host\" \"npm run dev:mqtt\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.104.1",

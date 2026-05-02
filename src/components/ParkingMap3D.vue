@@ -44,6 +44,9 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// Fix MapLibre worker di production build — tanpa ini map blank di npm run build
+import MaplibreWorker from 'maplibre-gl/dist/maplibre-gl-csp-worker?worker&inline'
+maplibregl.workerClass = MaplibreWorker
 
 const props = defineProps({
   userLat: { type: Number, default: -7.2650876 },

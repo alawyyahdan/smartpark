@@ -7,5 +7,19 @@ export default defineConfig({
     hmr: {
       overlay: false
     }
+  },
+  optimizeDeps: {
+    include: ['maplibre-gl']
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        // Pisahkan maplibre ke chunk tersendiri
+        manualChunks: (id) => {
+          if (id.includes('maplibre-gl')) return 'maplibre'
+          if (id.includes('leaflet')) return 'leaflet'
+        }
+      }
+    }
   }
 })

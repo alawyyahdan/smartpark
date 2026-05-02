@@ -603,9 +603,9 @@ function requestGps() {
       userLat.value = defLat
       userLng.value = defLng
 
+      await loadTicket()
       gpsGranted.value = true
       gpsLoading.value = false
-      loadTicket()
     })
     return
   }
@@ -623,13 +623,23 @@ function requestGps() {
   const settingsPromise = fetchMapSettings()
 
   navigator.geolocation.getCurrentPosition(
-    function onSuccess(pos) {
+    async function onSuccess(pos) {
       userLat.value = pos.coords.latitude
       userLng.value = pos.coords.longitude
+      
+      try {
+        // Tunggu settings selesai dulu
+        await settingsPromise
+        // Tunggu loadTicket selesai ambil slot, lock nearest, dll
+        await loadTicket()
+      } catch (e) {
+        console.error('Error during init:', e)
+      }
+
+      // BARU TAMPILIN MAP SETELAH SEMUA DATA READY!
+      // Ini mencegah map mount saat allSlots/targetSlot masih kosong yang bikin map nge-blank
       gpsGranted.value = true
       gpsLoading.value = false
-      // Tunggu settings selesai dulu (biasanya udah selesai duluan), baru loadTicket
-      settingsPromise.then(() => loadTicket())
     },
     function onError(err) {
       gpsLoading.value = false
