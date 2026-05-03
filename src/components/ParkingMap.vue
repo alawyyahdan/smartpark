@@ -349,6 +349,7 @@ defineExpose({ recenter, updateUserPosition, fetchRoute })
   overflow: hidden;
   background: #e5e7eb;
   transition: all 0.3s ease;
+  isolation: isolate;
 }
 
 .parking-map-container.fullscreen {
@@ -360,17 +361,25 @@ defineExpose({ recenter, updateUserPosition, fetchRoute })
   z-index: 9999;
 }
 
-.parking-map { width: 100%; height: 100%; }
+.parking-map { 
+  width: 100%; 
+  height: 100%; 
+  z-index: 1;
+}
 
 /* Map Controls */
 .map-controls {
   position: absolute;
   bottom: 16px;
   right: 16px;
-  display: flex;
+  display: flex !important;
   flex-direction: column;
   gap: 8px;
-  z-index: 10;
+  z-index: 9999 !important;
+  transform: translate3d(0, 0, 0);
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
 }
 
 .fullscreen .map-controls {
@@ -428,11 +437,14 @@ defineExpose({ recenter, updateUserPosition, fetchRoute })
   position: absolute;
   bottom: 16px;
   left: 16px;
-  z-index: 1000;
-  display: flex;
+  z-index: 9999 !important;
+  transform: translate3d(0, 0, 0);
+  display: flex !important;
   flex-direction: column;
   align-items: center;
   gap: 2px;
+  opacity: 1 !important;
+  visibility: visible !important;
 }
 .joy-mid { display: flex; align-items: center; gap: 2px; }
 
