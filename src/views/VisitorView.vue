@@ -243,7 +243,42 @@
           </div>
         </template>
 
-        <!-- SEDANG PARKIR: cuma tombol keluar -->
+        <!-- SEDANG PARKIR: Banner Celebration + Tombol Keluar -->
+        <div v-if="!exitMode && ticket?.status === 'parked'" class="parked-banner">
+          <!-- Confetti -->
+          <div class="confetti-box" aria-hidden="true">
+            <span v-for="i in 18" :key="i" class="confetti-piece" :style="`--i:${i}`"></span>
+          </div>
+
+          <!-- Icon Celebration -->
+          <div class="parked-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="11" fill="#22c55e" fill-opacity="0.15" stroke="#22c55e" stroke-width="1.5"/>
+              <path d="M7 13l3 3 7-7" stroke="#22c55e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+
+          <h3 class="parked-title">Kendaraan Anda Sudah Terparkir! 🎉</h3>
+          <p class="parked-slot">Slot <strong>{{ session?.slot?.name || '—' }}</strong></p>
+
+          <!-- Cooldown info -->
+          <div class="parked-cooldown" :class="{ 'cooldown-done': exitCooldownDone }">
+            <div v-if="!exitCooldownDone" class="cooldown-waiting">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <span>Tombol keluar tersedia dalam <strong>{{ exitCooldownRemaining }}</strong></span>
+              <span class="cooldown-hint">(min. {{ exitCooldownMinutes }} menit sejak parkir)</span>
+            </div>
+            <div v-else class="cooldown-ready">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 6 9 17l-5-5"/>
+              </svg>
+              <span>Tombol keluar sudah tersedia!</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Tombol Keluar Parkir (muncul saat sudah parkir, disabled kalau cooldown) -->
         <button v-if="!exitMode && ticket?.status === 'parked'" class="btn-exit-parking" :class="{ 'btn-exit-disabled': !exitCooldownDone }" @click="exitCooldownDone ? enterExitMode() : null">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2130,6 +2165,119 @@ onUnmounted(() => {
   background: #fef2f2;
   border-color: #ef4444;
   color: #dc2626;
+}
+
+/* ===== PARKED CELEBRATION BANNER ===== */
+.parked-banner {
+  position: relative;
+  text-align: center;
+  padding: 28px 20px 24px;
+  background: linear-gradient(135deg, rgba(34,197,94,0.08), rgba(16,185,129,0.05));
+  border: 1.5px solid rgba(34,197,94,0.25);
+  border-radius: 20px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.confetti-box {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.confetti-piece {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  top: -12px;
+  left: calc(var(--i) * 5.5%);
+  border-radius: 2px;
+  animation: confetti-fall calc(2.5s + var(--i) * 0.13s) ease-in calc(var(--i) * 0.08s) infinite;
+  background: hsl(calc(var(--i) * 22), 80%, 55%);
+}
+
+.confetti-piece:nth-child(odd) { border-radius: 50%; width: 6px; height: 6px; }
+.confetti-piece:nth-child(3n) { width: 5px; height: 10px; border-radius: 1px; }
+
+@keyframes confetti-fall {
+  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  80%  { opacity: 1; }
+  100% { transform: translateY(240px) rotate(540deg); opacity: 0; }
+}
+
+.parked-icon {
+  display: inline-flex;
+  margin-bottom: 12px;
+  animation: icon-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes icon-pop {
+  from { transform: scale(0.4); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+.parked-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 4px;
+  letter-spacing: -0.3px;
+}
+
+.parked-slot {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0 0 14px;
+}
+
+.parked-slot strong {
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.parked-cooldown {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(100,116,139,0.06);
+  border: 1px solid rgba(100,116,139,0.15);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: #475569;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.parked-cooldown.cooldown-done {
+  background: rgba(34,197,94,0.08);
+  border-color: rgba(34,197,94,0.25);
+  color: #15803d;
+}
+
+.cooldown-waiting, .cooldown-ready {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cooldown-waiting strong { color: #0f172a; font-weight: 700; }
+
+.cooldown-hint {
+  display: block;
+  width: 100%;
+  padding-left: 21px;
+  color: #94a3b8;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.cooldown-ready {
+  color: #15803d;
+  font-weight: 600;
 }
 
 .btn-exit-parking {

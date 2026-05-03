@@ -817,6 +817,20 @@
 
               <div class="danger-action-item">
                 <div class="danger-action-info">
+                  <strong>Unlock Semua Lock</strong>
+                  <span>Lepas semua slot yang sedang di-lock pengunjung. Status slot tidak berubah.</span>
+                </div>
+                <button class="btn-danger" @click="unlockAllSlots" :disabled="dangerLoading" title="Hapus semua locked_by">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                    <line x1="8" y1="15" x2="16" y2="15"/>
+                  </svg>
+                  Unlock
+                </button>
+              </div>
+
+              <div class="danger-action-item">
+                <div class="danger-action-info">
                   <strong>Reset Settings</strong>
                   <span>Kembalikan semua pengaturan ke nilai default</span>
                 </div>
@@ -1651,6 +1665,32 @@ function resetSlots() {
     }
   })
 }
+
+function unlockAllSlots() {
+  showConfirm({
+    title: 'Unlock Semua Lock',
+    message: 'Lepas semua slot yang sedang di-lock pengunjung?<br><br>Status slot (available/occupied) <b>tidak akan berubah</b>. Hanya lock-nya yang dihapus.',
+    confirmText: 'Unlock Semua',
+    danger: false,
+    onConfirm: async () => {
+      dangerLoading.value = true
+      try {
+        const { error } = await supabase
+          .from('parking_slots')
+          .update({ locked_by: null })
+          .not('locked_by', 'is', null)
+        if (error) throw error
+        showToast('✅ Semua lock berhasil dilepas', 'success')
+        fetchSlots()
+      } catch (err) {
+        showToast('❌ Gagal unlock: ' + err.message, 'error')
+      } finally {
+        dangerLoading.value = false
+      }
+    }
+  })
+}
+
 
 function hapusInfrastruktur() {
   showConfirm({
