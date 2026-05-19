@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS public.parking_areas (
 CREATE TABLE IF NOT EXISTS public.parking_slots (
   id           SERIAL PRIMARY KEY,
   name         VARCHAR(10) NOT NULL,
-  status       VARCHAR(20) NOT NULL DEFAULT 'available'
-               CHECK (status IN ('available', 'occupied')),
+  status       VARCHAR(20) NOT NULL DEFAULT 'tersedia'
+               CHECK (status IN ('tersedia', 'diambil')),
   area_id      INT REFERENCES public.parking_areas(id) ON DELETE CASCADE,
   lat          DECIMAL(10, 8),
   lng          DECIMAL(11, 8),
@@ -68,14 +68,38 @@ CREATE TABLE IF NOT EXISTS public.exit_gates (
 
 -- 6. Gate Accounts table
 CREATE TABLE IF NOT EXISTS public.gate_accounts (
-  id           SERIAL PRIMARY KEY,
-  username     VARCHAR(50) UNIQUE NOT NULL,
-  password     VARCHAR(100) NOT NULL,
-  current_gate INT REFERENCES public.exit_gates(id) ON DELETE SET NULL,
-  is_online    BOOLEAN DEFAULT false,
-  last_active  TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id            SERIAL PRIMARY KEY,
+  username      VARCHAR(50) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  current_gate  INT REFERENCES public.exit_gates(id) ON DELETE SET NULL,
+  is_online     BOOLEAN DEFAULT false,
+  last_active   TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Helper: hash password dengan pgcrypto
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- RPC: verify gate account password (aman, hash tidak pernah dikirim ke client)
+CREATE OR REPLACE FUNCTION public.verify_gate_login(p_username TEXT, p_password TEXT)
+RETURNS TABLE(id INT, username VARCHAR, current_gate INT, is_online BOOLEAN) AS $$
+BEGIN
+  RETURN QUERY
+    SELECT ga.id, ga.username, ga.current_gate, ga.is_online
+    FROM public.gate_accounts ga
+    WHERE ga.username = p_username
+      AND ga.password_hash = crypt(p_password, ga.password_hash);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RPC: create gate account with hashed password
+CREATE OR REPLACE FUNCTION public.create_gate_account(p_username TEXT, p_password TEXT)
+RETURNS void AS $$
+BEGIN
+  INSERT INTO public.gate_accounts (username, password_hash)
+  VALUES (p_username, crypt(p_password, gen_salt('bf')));
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- 7. MQTT Logs table
 CREATE TABLE IF NOT EXISTS public.mqtt_logs (
@@ -85,7 +109,7 @@ CREATE TABLE IF NOT EXISTS public.mqtt_logs (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 8. Settings table
+-- 8. Settings table (key-value config)
 CREATE TABLE IF NOT EXISTS public.settings (
   id          SERIAL PRIMARY KEY,
   key         VARCHAR(50) UNIQUE NOT NULL,
@@ -94,7 +118,7 @@ CREATE TABLE IF NOT EXISTS public.settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 6. Seed default settings
+-- Seed default settings
 INSERT INTO public.settings (key, value, description) VALUES
   ('pricing_mode', 'per_hour', 'Mode harga: per_minute, per_hour'),
   ('price_per_minute', '500', 'Harga per menit (Rp)'),
@@ -136,62 +160,74 @@ ALTER TABLE public.exit_gates    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mqtt_logs     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.gate_accounts ENABLE ROW LEVEL SECURITY;
 
--- 8. RLS Policies
+-- 10. RLS Policies
 
--- Tickets: allow both authenticated & anon
+-- Tickets: anon bisa read + insert + update (visitor flow), authenticated full
 CREATE POLICY "Allow authenticated on tickets" ON public.tickets
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on tickets" ON public.tickets
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on tickets" ON public.tickets
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Allow anon insert on tickets" ON public.tickets
+  FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "Allow anon update on tickets" ON public.tickets
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
 
--- Parking Slots: allow both
+-- Parking Slots: anon bisa read + update (lock/unlock), authenticated full
 CREATE POLICY "Allow authenticated on parking_slots" ON public.parking_slots
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on parking_slots" ON public.parking_slots
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on parking_slots" ON public.parking_slots
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Allow anon update on parking_slots" ON public.parking_slots
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
 
--- Parking Areas: allow both
+-- Parking Areas: anon read-only, authenticated full
 CREATE POLICY "Allow authenticated on parking_areas" ON public.parking_areas
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on parking_areas" ON public.parking_areas
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on parking_areas" ON public.parking_areas
+  FOR SELECT TO anon USING (true);
 
--- Sessions: allow both
+-- Sessions: anon bisa read + insert (visitor creates session), authenticated full
 CREATE POLICY "Allow authenticated on sessions" ON public.sessions
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on sessions" ON public.sessions
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on sessions" ON public.sessions
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Allow anon insert on sessions" ON public.sessions
+  FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "Allow anon update on sessions" ON public.sessions
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
 
--- Settings: allow both
+-- Settings: anon read-only, authenticated full
 CREATE POLICY "Allow authenticated on settings" ON public.settings
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on settings" ON public.settings
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on settings" ON public.settings
+  FOR SELECT TO anon USING (true);
 
--- Exit Gates: allow both
+-- Exit Gates: anon read-only, authenticated full
 CREATE POLICY "Allow authenticated on exit_gates" ON public.exit_gates
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on exit_gates" ON public.exit_gates
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on exit_gates" ON public.exit_gates
+  FOR SELECT TO anon USING (true);
 
--- Gate Accounts: allow both
+-- Gate Accounts: anon bisa read + update (login/heartbeat), authenticated full
 CREATE POLICY "Allow authenticated on gate_accounts" ON public.gate_accounts
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on gate_accounts" ON public.gate_accounts
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on gate_accounts" ON public.gate_accounts
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Allow anon update on gate_accounts" ON public.gate_accounts
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
 
--- MQTT Logs: allow both
+-- MQTT Logs: anon read-only, authenticated full
 CREATE POLICY "Allow authenticated on mqtt_logs" ON public.mqtt_logs
   FOR ALL TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "Allow anon on mqtt_logs" ON public.mqtt_logs
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon select on mqtt_logs" ON public.mqtt_logs
+  FOR SELECT TO anon USING (true);
 
 -- 11. Create Storage Bucket for vehicle images
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('vehicle-images', 'vehicle-images', true)
 ON CONFLICT (id) DO NOTHING;
 
--- 10. Storage Policies
+-- 12. Storage Policies
 CREATE POLICY "Allow public upload" ON storage.objects
   FOR INSERT TO anon WITH CHECK (bucket_id = 'vehicle-images');
 CREATE POLICY "Allow public read" ON storage.objects

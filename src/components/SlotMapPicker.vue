@@ -31,6 +31,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { computeSlotCorners, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
 
 const props = defineProps({
   lat: { type: [Number, String], default: null },
@@ -39,8 +40,8 @@ const props = defineProps({
   slotWidth: { type: [Number, String], default: 3 },
   slotHeight: { type: [Number, String], default: 5 },
   existingSlots: { type: Array, default: () => [] },
-  defaultLat: { type: Number, default: -7.2650876 },
-  defaultLng: { type: Number, default: 112.783217 }
+  defaultLat: { type: Number, default: DEFAULT_LAT },
+  defaultLng: { type: Number, default: DEFAULT_LNG }
 })
 
 const emit = defineEmits(['update:lat', 'update:lng', 'update:rotation', 'update:slotWidth', 'update:slotHeight'])
@@ -49,8 +50,7 @@ const mapRef = ref(null)
 let map = null
 let slotRect = null
 let slotMarker = null
-// 1 meter ≈ 0.000009 degrees latitude
-const METER_TO_DEG = 0.000009
+let resizeObserver = null
 
 const DEFAULT_CENTER = [props.defaultLat, props.defaultLng]
 
@@ -69,7 +69,7 @@ onMounted(() => {
     maxZoom: 22
   }).addTo(map)
 
-  const resizeObserver = new ResizeObserver(() => {
+  resizeObserver = new ResizeObserver(() => {
     if (map) map.invalidateSize()
   })
   resizeObserver.observe(mapRef.value)
@@ -100,13 +100,14 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (resizeObserver) resizeObserver.disconnect()
   if (map) map.remove()
 })
 
 function drawCurrentSlot() {
   const lat = parseFloat(props.lat)
   const lng = parseFloat(props.lng)
-  if (!lat || !lng) return
+  if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return
 
   if (slotRect) map.removeLayer(slotRect)
   if (slotMarker) map.removeLayer(slotMarker)
@@ -142,17 +143,7 @@ function drawCurrentSlot() {
 }
 
 function drawRect(lat, lng, rotation, widthM, heightM, color, label, isCurrent) {
-  const w = (widthM / 2) * METER_TO_DEG
-  const h = (heightM / 2) * METER_TO_DEG
-  const rad = (rotation * Math.PI) / 180
-
-  const corners = [
-    [-h, -w], [-h, w], [h, w], [h, -w]
-  ].map(([dy, dx]) => {
-    const ry = dy * Math.cos(rad) - dx * Math.sin(rad)
-    const rx = dy * Math.sin(rad) + dx * Math.cos(rad)
-    return [lat + ry, lng + rx]
-  })
+  const corners = computeSlotCorners(lat, lng, rotation, widthM, heightM)
 
   const poly = L.polygon(corners, {
     color,

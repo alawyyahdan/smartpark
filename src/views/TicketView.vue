@@ -75,7 +75,7 @@
 
       <!-- Footer -->
       <footer class="kiosk-footer">
-        <span>Sistem Parkir Cerdas — {{ appName }} v1.0</span>
+        <span>{{ appName }} v1.0</span>
       </footer>
     </div>
 
@@ -221,8 +221,8 @@ async function fetchSlots() {
     
     // Update stats (kalau data kosong, jadi 0 semua)
     slots.value.total = data?.length || 0
-    slots.value.available = data?.filter(s => s.status === 'available').length || 0
-    slots.value.occupied = data?.filter(s => s.status === 'occupied').length || 0
+    slots.value.available = data?.filter(s => s.status === 'tersedia').length || 0
+    slots.value.occupied = data?.filter(s => s.status === 'diambil').length || 0
   } catch (err) {
     console.error('Fetch slots error:', err)
   }
@@ -240,6 +240,7 @@ async function generateTicket() {
       if (captured && captured.blob) {
         // Upload to Supabase Storage
         const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`
+        console.log('[Ticket] Uploading vehicle image:', fileName, 'size:', captured.blob.size)
         const { data: uploadData, error: uploadError } = await supabase.storage
           .from('vehicle-images')
           .upload(fileName, captured.blob, {
@@ -248,15 +249,20 @@ async function generateTicket() {
           })
 
         if (uploadError) {
-          console.error('Upload error:', uploadError)
+          console.error('[Ticket] Upload error:', uploadError.message, uploadError)
         } else {
           // Get public URL
           const { data: urlData } = supabase.storage
             .from('vehicle-images')
             .getPublicUrl(fileName)
           vehicleImageUrl = urlData.publicUrl
+          console.log('[Ticket] Vehicle image URL:', vehicleImageUrl)
         }
+      } else {
+        console.warn('[Ticket] Camera capture returned empty:', captured)
       }
+    } else {
+      console.warn('[Ticket] No camera ref available')
     }
 
     // 2. Get today's count for sequence
@@ -366,12 +372,15 @@ onMounted(async () => {
   checkDebugMode()
   await fetchAppSettings()
   fetchSlots()
-  setInterval(fetchSlots, 10000)
+  slotPollInterval = setInterval(fetchSlots, 10000)
 })
+
+let slotPollInterval = null
 
 onUnmounted(() => {
   clearInterval(clockInterval)
   clearInterval(countdownInterval)
+  if (slotPollInterval) clearInterval(slotPollInterval)
   
   // Cleanup realtime
   if (realtimeChannel) {

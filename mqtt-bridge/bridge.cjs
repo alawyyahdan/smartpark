@@ -3,6 +3,15 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') })
 const mqtt = require('mqtt')
 const { createClient } = require('@supabase/supabase-js')
 
+// ===== CONSTANTS =====
+const MAX_LOGS = 200
+const POLL_INTERVAL_MS = 5000
+const STATUS_REPORT_INTERVAL_MS = 60000
+const LOG_CLEANUP_INTERVAL_MS = 300000 // 5 menit
+const RECONNECT_PERIOD_MS = 5000
+const CONNECT_TIMEOUT_MS = 10000
+const MESSAGE_BATCH_SIZE = 5
+
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 
@@ -26,20 +35,25 @@ async function log(type, msg) {
   const prefix = { info: 'ℹ️', success: '✅', error: '❌', mqtt: '📡', db: '💾' }
   console.log(`[${time}] ${prefix[type] || '•'} ${msg}`)
   
-  // Tulis ke DB
   try {
     await supabase.from('mqtt_logs').insert([{ type, message: msg }])
-    
-    // Cleanup: hapus log lama kalau lebih dari 200
+  } catch (e) {
+    console.error('Log DB error:', e.message)
+  }
+}
+
+// Periodic log cleanup (setiap 5 menit, bukan setiap message)
+async function cleanupOldLogs() {
+  try {
     const { count } = await supabase.from('mqtt_logs').select('*', { count: 'exact', head: true })
-    if (count > 200) {
-      const { data: old } = await supabase.from('mqtt_logs').select('id').order('id', { ascending: true }).limit(count - 200)
+    if (count > MAX_LOGS) {
+      const { data: old } = await supabase.from('mqtt_logs').select('id').order('id', { ascending: true }).limit(count - MAX_LOGS)
       if (old && old.length > 0) {
         await supabase.from('mqtt_logs').delete().lte('id', old[old.length - 1].id)
       }
     }
   } catch (e) {
-    console.error('Log DB error:', e.message)
+    console.error('Log cleanup error:', e.message)
   }
 }
 
@@ -67,7 +81,11 @@ async function updateStatus(status) {
 }
 
 async function updateMessages() {
-  await supabase.from('settings').upsert([{ key: 'mqtt_messages', value: String(messageCount), updated_at: new Date().toISOString() }], { onConflict: 'key' })
+  try {
+    await supabase.from('settings').upsert([{ key: 'mqtt_messages', value: String(messageCount), updated_at: new Date().toISOString() }], { onConflict: 'key' })
+  } catch (e) {
+    console.error('Update messages error:', e.message)
+  }
 }
 
 // ===== HANDLE MESSAGE =====
@@ -75,7 +93,7 @@ async function handleMessage(topic, message) {
   try {
     const payload = JSON.parse(message.toString())
     const status = payload.status
-    if (!status || !['occupied', 'available'].includes(status)) return
+    if (!status || !['diambil', 'tersedia'].includes(status)) return
 
     messageCount++
     await log('mqtt', `${topic} → ${status}`)
@@ -87,7 +105,7 @@ async function handleMessage(topic, message) {
       .select('name')
 
     if (data && data.length > 0) await log('db', `Slot ${data[0].name} → ${status}`)
-    if (messageCount % 5 === 0) updateMessages()
+    if (messageCount % MESSAGE_BATCH_SIZE === 0) updateMessages()
   } catch (err) {
     await log('error', `Parse: ${err.message}`)
   }
@@ -114,9 +132,9 @@ async function connect() {
   mqttClient = mqtt.connect(settings.mqtt_broker, {
     username: settings.mqtt_username || undefined,
     password: settings.mqtt_password || undefined,
-    reconnectPeriod: 5000,
-    connectTimeout: 10000,
-    keepalive          // ping ke broker setiap N detik biar ga timeout
+    reconnectPeriod: RECONNECT_PERIOD_MS,
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    keepalive
   })
 
   mqttClient.on('connect', async () => {
@@ -154,53 +172,54 @@ function disconnect() {
   if (mqttClient) { mqttClient.end(true); mqttClient = null }
 }
 
+// ===== POLL SETTINGS & RECONNECT =====
+async function pollSettingsAndReconnect() {
+  const settings = await fetchSettings()
+  const shouldBeEnabled = settings.mqtt_enabled === 'true'
+
+  if (shouldBeEnabled && !enabled) {
+    enabled = true
+    await log('success', 'Bridge ENABLED (dinyalakan dari admin)')
+    await connect()
+  } else if (!shouldBeEnabled && enabled) {
+    enabled = false
+    disconnect()
+    await updateStatus('offline')
+    await log('info', 'Bridge DISABLED (dimatikan dari admin)')
+  }
+
+  // Cek broker berubah
+  if (enabled && mqttClient) {
+    if (settings.mqtt_broker !== currentBroker || settings.mqtt_username !== currentUsername || settings.mqtt_password !== currentPassword) {
+      await log('info', 'MQTT settings changed, reconnecting...')
+      disconnect()
+      await connect()
+      return
+    }
+
+    // Refresh topics tiap cycle
+    const newTopics = await fetchTopics()
+    const added = newTopics.filter(t => !topics.includes(t))
+    if (added.length > 0 && mqttClient.connected) {
+      added.forEach(t => mqttClient.subscribe(t))
+      topics = newTopics
+      await log('info', `New topics subscribed: ${added.join(', ')}`)
+    }
+  }
+}
+
 // ===== MAIN LOOP =====
 async function mainLoop() {
   await log('info', '=== MQTT Bridge Started ===')
 
   // Check enabled/disabled tiap 5 detik
-  setInterval(async () => {
-    const settings = await fetchSettings()
-    const shouldBeEnabled = settings.mqtt_enabled === 'true'
-
-    if (shouldBeEnabled && !enabled) {
-      enabled = true
-      await log('success', 'Bridge ENABLED (dinyalakan dari admin)')
-      await connect()
-    } else if (!shouldBeEnabled && enabled) {
-      enabled = false
-      disconnect()
-      await updateStatus('offline')
-      await log('info', 'Bridge DISABLED (dimatikan dari admin)')
-    }
-    
-    // Log kalau connection lost tapi masih enabled
-    if (enabled && mqttClient && !mqttClient.connected) {
-      // mqttClient handles reconnect automatically
-    }
-
-    // Cek broker berubah
-    if (enabled && mqttClient) {
-      if (settings.mqtt_broker !== currentBroker || settings.mqtt_username !== currentUsername || settings.mqtt_password !== currentPassword) {
-        await log('info', 'MQTT settings changed, reconnecting...')
-        disconnect()
-        await connect()
-        return // Skip the rest for this cycle
-      }
-
-      // Refresh topics tiap cycle
-      const newTopics = await fetchTopics()
-      const added = newTopics.filter(t => !topics.includes(t))
-      if (added.length > 0 && mqttClient.connected) {
-        added.forEach(t => mqttClient.subscribe(t))
-        topics = newTopics
-        await log('info', `New topics subscribed: ${added.join(', ')}`)
-      }
-    }
-  }, 5000)
+  setInterval(pollSettingsAndReconnect, POLL_INTERVAL_MS)
 
   // Status report tiap 60 detik
-  setInterval(() => { if (enabled) updateMessages() }, 60000)
+  setInterval(() => { if (enabled) updateMessages() }, STATUS_REPORT_INTERVAL_MS)
+
+  // Log cleanup tiap 5 menit
+  setInterval(cleanupOldLogs, LOG_CLEANUP_INTERVAL_MS)
 
   // Initial check
   const settings = await fetchSettings()
@@ -212,7 +231,14 @@ async function mainLoop() {
   }
 }
 
-process.on('SIGINT', async () => { await log('info', 'Bridge shutting down (SIGINT)'); disconnect(); await updateStatus('offline'); process.exit(0) })
-process.on('SIGTERM', async () => { await log('info', 'Bridge shutting down (SIGTERM)'); disconnect(); await updateStatus('offline'); process.exit(0) })
+async function gracefulShutdown(signal) {
+  await log('info', `Bridge shutting down (${signal})`)
+  disconnect()
+  await updateStatus('offline')
+  process.exit(0)
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 
 mainLoop()

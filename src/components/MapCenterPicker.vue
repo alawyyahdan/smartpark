@@ -12,6 +12,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
 
 const props = defineProps({
   lat: { type: [Number, String], default: null },
@@ -23,11 +24,12 @@ const emit = defineEmits(['update:lat', 'update:lng'])
 const mapRef = ref(null)
 let map = null
 let marker = null
+let resizeObserver = null
 
 onMounted(() => {
   const center = (props.lat && props.lng)
     ? [parseFloat(props.lat), parseFloat(props.lng)]
-    : [-7.2650876, 112.783217]
+    : [DEFAULT_LAT, DEFAULT_LNG]
 
   // Init tanpa delay, tapi dengan ResizeObserver
   map = L.map(mapRef.value, { center, zoom: 17, zoomControl: true })
@@ -37,10 +39,10 @@ onMounted(() => {
   }).addTo(map)
 
   // Force map reflow saat size container berubah
-  const observer = new ResizeObserver(() => {
+  resizeObserver = new ResizeObserver(() => {
     if (map) map.invalidateSize()
   })
-  if (mapRef.value) observer.observe(mapRef.value)
+  if (mapRef.value) resizeObserver.observe(mapRef.value)
 
   setTimeout(() => { if (map) map.invalidateSize() }, 300)
 
@@ -55,7 +57,10 @@ onMounted(() => {
   })
 })
 
-onUnmounted(() => { if (map) map.remove() })
+onUnmounted(() => {
+  if (resizeObserver) resizeObserver.disconnect()
+  if (map) map.remove()
+})
 
 function placeMarker(lat, lng) {
   if (marker) map.removeLayer(marker)

@@ -196,7 +196,7 @@
             :userLat="userLat"
             :userLng="userLng"
             :targetSlot="lockedSlot"
-            :slots="allSlots"
+            :slots="exitMode ? [] : allSlots"
             :debug="fakeGps.active"
             :lineColor="navLineColor"
             @update:userLat="v => userLat = v"
@@ -207,7 +207,7 @@
             :userLat="userLat"
             :userLng="userLng"
             :targetSlot="lockedSlot"
-            :slots="allSlots"
+            :slots="exitMode ? [] : allSlots"
             :debug="fakeGps.active"
             :lineColor="navLineColor"
             @update:userLat="v => userLat = v"
@@ -476,7 +476,6 @@ const state = ref('loading') // loading | no-ticket | error | expired | done | v
 const ticket = ref(null)
 const session = ref(null)
 const errorMsg = ref('')
-const confirmingParking = ref(false)
 const isDebugMode = ref(false)
 
 // GPS gate - WAJIB granted sebelum lanjut
@@ -1027,7 +1026,7 @@ async function lockNearestSlot(ticketId) {
       lockedSlot.value = myLocks[0]
       console.log('[LOCK] Already locked:', myLocks[0].name, 'status:', myLocks[0].status)
       // Kalau slot udah occupied tapi masih locked_by kita, langsung auto-park
-      if (myLocks[0].status === 'occupied') {
+      if (myLocks[0].status === 'diambil') {
         console.log('[LOCK] Slot already occupied! Auto-parking.')
         handleOccupiedYes()
       } else {
@@ -1069,7 +1068,7 @@ async function lockNearestSlot(ticketId) {
     }
 
     // 3. Ambil slot available yang ga di-lock
-    const freeSlots = allSlots.filter(s => s.status === 'available' && !s.locked_by)
+    const freeSlots = allSlots.filter(s => s.status === 'tersedia' && !s.locked_by)
 
     console.log('[LOCK] Step 3 - freeSlots:', freeSlots.length, 'of', allSlots.length, 'total')
     console.log('[LOCK] All slot statuses:', allSlots.map(s => `${s.name}:${s.status}:${s.locked_by || 'null'}`))
@@ -1225,7 +1224,7 @@ async function enterExitMode(skipDbUpdate = false) {
   if (lockedSlot.value && lockedSlot.value.name !== 'EXIT' && lockedSlot.value.id && !skipDbUpdate) {
     await supabase
       .from('parking_slots')
-      .update({ status: 'available', locked_by: null })
+      .update({ status: 'tersedia', locked_by: null })
       .eq('id', lockedSlot.value.id)
   }
 
@@ -1329,7 +1328,7 @@ function watchLockedSlot() {
       }
 
       // Lock masih milik saya, tapi terdeteksi terisi
-      if (status === 'occupied') {
+      if (status === 'diambil') {
         console.log('[AUTO-PARK] Slot detected occupied and still locked by me. Auto-confirming.')
         handleOccupiedYes()
       }
@@ -1355,7 +1354,7 @@ function watchLockedSlot() {
         return
       }
       
-      if (data.status === 'occupied') {
+      if (data.status === 'diambil') {
         console.log('[AUTO-PARK-POLL] Slot detected occupied and still locked by me. Auto-confirming.')
         handleOccupiedYes()
       }
@@ -1497,7 +1496,7 @@ async function handleOccupiedDifferentSlot() {
   // Set slot baru jadi occupied
   await supabase
     .from('parking_slots')
-    .update({ status: 'occupied', locked_by: null, updated_at: now })
+    .update({ status: 'diambil', locked_by: null, updated_at: now })
     .eq('id', targetSlot.id)
 
   // Update tiket jadi parked
@@ -1529,63 +1528,6 @@ async function handleOccupiedDifferentSlot() {
 }
 
 // ===== END SLOT LOCKING =====
-
-async function confirmParking() {
-  if (!ticket.value || confirmingParking.value) return
-  
-  clearIdleTimer() // Stop idle timer - user parkir
-  confirmingParking.value = true
-  
-  try {
-    // Pakai locked slot kalau ada, kalau ga ada cari baru
-    const targetSlot = lockedSlot.value
-    
-    if (!targetSlot) {
-      confirmingParking.value = false
-      return
-    }
-    
-    // 1. Update slot jadi occupied dan clear lock
-    await supabase
-      .from('parking_slots')
-      .update({ status: 'occupied', locked_by: null, updated_at: new Date().toISOString() })
-      .eq('id', targetSlot.id)
-    
-    // 2. Update ticket status jadi parked
-    await supabase
-      .from('tickets')
-      .update({ 
-        status: 'parked', 
-        parked_at: new Date().toISOString() 
-      })
-      .eq('id', ticket.value.id)
-    
-    // 3. Create session
-    const { data: newSession } = await supabase
-      .from('sessions')
-      .insert([{
-        ticket_id: ticket.value.id,
-        slot_id: targetSlot.id,
-        entry_time: new Date().toISOString()
-      }])
-      .select('*, slot:parking_slots(name)')
-      .single()
-    
-    // 5. Update local state
-    ticket.value.status = 'parked'
-    ticket.value.parked_at = new Date().toISOString()
-    session.value = newSession
-    
-    // Timer udah jalan dari created_at, jangan reset
-    
-    confirmingParking.value = false
-    
-  } catch (err) {
-    console.error('Confirm parking error:', err)
-    alert('Gagal konfirmasi parkir: ' + err.message)
-    confirmingParking.value = false
-  }
-}
 
 // Debug functions
 async function debugFakeScanQR() {
@@ -1619,7 +1561,7 @@ async function debugSimulateStolen() {
   if (!lockedSlot.value || !lockedSlot.value.id || ticket.value?.status !== 'active') return
   await supabase
     .from('parking_slots')
-    .update({ locked_by: null, status: 'occupied', updated_at: new Date().toISOString() })
+    .update({ locked_by: null, status: 'diambil', updated_at: new Date().toISOString() })
     .eq('id', lockedSlot.value.id)
   console.log('[DEBUG] Slot stolen simulated. Waiting for handleStolen...')
 }
@@ -1641,7 +1583,7 @@ async function debugUnlockAll() {
   // Clear SEMUA locked_by di parking_slots
   await supabase
     .from('parking_slots')
-    .update({ locked_by: null, status: 'available' })
+    .update({ locked_by: null, status: 'tersedia' })
     .neq('id', '00000000-0000-0000-0000-000000000000') // match all rows
   
   lockedSlot.value = null

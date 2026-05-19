@@ -31,24 +31,24 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { computeSlotCorners, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
 
 const props = defineProps({
   slots: { type: Array, default: () => [] },
-  centerLat: { type: Number, default: -7.2650876 },
-  centerLng: { type: Number, default: 112.783217 }
+  centerLat: { type: Number, default: DEFAULT_LAT },
+  centerLng: { type: Number, default: DEFAULT_LNG }
 })
 
 const mapRef = ref(null)
 const isFullscreen = ref(false)
 let map = null
 let slotLayers = []
+let resizeObserver = null
 
 function toggleFullscreen() {
   isFullscreen.value = !isFullscreen.value
   setTimeout(() => { if (map) map.invalidateSize() }, 100)
 }
-
-const METER_TO_DEG = 0.000009
 
 onMounted(() => {
   // Delay init supaya container udah visible & punya size
@@ -80,7 +80,7 @@ function initMap() {
   }).addTo(map)
 
   // Fix map setengah abu-abu saat tab dibuka
-  const resizeObserver = new ResizeObserver(() => {
+  resizeObserver = new ResizeObserver(() => {
     if (map) map.invalidateSize()
   })
   resizeObserver.observe(mapRef.value)
@@ -91,7 +91,10 @@ function initMap() {
   drawSlots()
 }
 
-onUnmounted(() => { if (map) map.remove() })
+onUnmounted(() => {
+  if (resizeObserver) resizeObserver.disconnect()
+  if (map) map.remove()
+})
 
 function recenterMap() {
   if (!map) return
@@ -122,25 +125,18 @@ function drawSlots() {
     const rotation = parseFloat(slot.rotation || 0)
     const widthM = parseFloat(slot.slot_width || 3)
     const heightM = parseFloat(slot.slot_height || 5)
-    const w = (widthM / 2) * METER_TO_DEG
-    const h = (heightM / 2) * METER_TO_DEG
-    const rad = (rotation * Math.PI) / 180
 
     // Color based on status
-    let color = '#10b981' // available = green
-    if (slot.status === 'occupied') color = '#ef4444' // red
+    let color = '#10b981' // tersedia = green
+    if (slot.status === 'diambil') color = '#ef4444' // red
     else if (slot.locked_by) color = '#3b82f6' // locked = blue
 
-    const corners = [[-h, -w], [-h, w], [h, w], [h, -w]].map(([dy, dx]) => {
-      const ry = dy * Math.cos(rad) - dx * Math.sin(rad)
-      const rx = dy * Math.sin(rad) + dx * Math.cos(rad)
-      return [lat + ry, lng + rx]
-    })
+    const corners = computeSlotCorners(lat, lng, rotation, widthM, heightM)
 
     const poly = L.polygon(corners, {
       color,
       weight: 2,
-      fillOpacity: slot.status === 'occupied' ? 0.5 : slot.locked_by ? 0.3 : 0.2,
+      fillOpacity: slot.status === 'diambil' ? 0.5 : slot.locked_by ? 0.3 : 0.2,
       fillColor: color
     }).addTo(map)
 

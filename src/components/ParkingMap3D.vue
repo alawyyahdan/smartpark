@@ -47,10 +47,11 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // Fix MapLibre worker di production build — tanpa ini map blank di npm run build
 import MaplibreWorker from 'maplibre-gl/dist/maplibre-gl-csp-worker?worker&inline'
 maplibregl.workerClass = MaplibreWorker
+import { computeSlotCornersGeoJSON, calcHeading, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
 
 const props = defineProps({
-  userLat: { type: Number, default: -7.2650876 },
-  userLng: { type: Number, default: 112.783217 },
+  userLat: { type: Number, default: DEFAULT_LAT },
+  userLng: { type: Number, default: DEFAULT_LNG },
   targetSlot: { type: Object, default: null },
   slots: { type: Array, default: () => [] },
   lineColor: { type: String, default: '#4285F4' },
@@ -69,7 +70,7 @@ function toggleFullscreen() {
 
 const mapRef = ref(null)
 let map = null
-let moveInterval = null
+let slotLabelMarker = null
 let lastHeading = 0
 let prevLat = null
 let prevLng = null
@@ -85,7 +86,6 @@ const DECELERATION = 0.6  // friction multiplier
 const TURN_SPEED = 3  // degrees per frame
 const FRAME_RATE = 30  // ms per frame
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving'
-const METER_TO_DEG = 0.000009
 
 onMounted(() => initMap())
 onUnmounted(() => {
@@ -224,7 +224,11 @@ function addTargetMarker() {
 
 // ===== SLOT RECTANGLES =====
 function drawSlots() {
-  // Remove old
+  if (slotLabelMarker) {
+    slotLabelMarker.remove()
+    slotLabelMarker = null
+  }
+
   props.slots.forEach((_, i) => {
     if (map.getLayer(`slot-${i}`)) map.removeLayer(`slot-${i}`)
     if (map.getLayer(`slot-outline-${i}`)) map.removeLayer(`slot-outline-${i}`)
@@ -235,21 +239,15 @@ function drawSlots() {
     if (!slot.lat || !slot.lng) return
 
     const isTarget = props.targetSlot && props.targetSlot.name === slot.name
-    const color = slot.status === 'occupied' ? '#ef4444' : isTarget ? '#22c55e' : '#10b981'
+    if (!isTarget) return
+    const color = slot.status === 'diambil' ? '#ef4444' : '#22c55e'
     const rotation = parseFloat(slot.rotation || 0)
     const widthM = parseFloat(slot.slot_width || 3)
     const heightM = parseFloat(slot.slot_height || 5)
-    const w = (widthM / 2) * METER_TO_DEG
-    const h = (heightM / 2) * METER_TO_DEG
-    const rad = (rotation * Math.PI) / 180
     const lat = parseFloat(slot.lat)
     const lng = parseFloat(slot.lng)
 
-    const corners = [[-h, -w], [-h, w], [h, w], [h, -w], [-h, -w]].map(([dy, dx]) => {
-      const ry = dy * Math.cos(rad) - dx * Math.sin(rad)
-      const rx = dy * Math.sin(rad) + dx * Math.cos(rad)
-      return [lng + rx, lat + ry]
-    })
+    const corners = computeSlotCornersGeoJSON(lat, lng, rotation, widthM, heightM)
 
     const srcId = `slot-${i}`
     map.addSource(srcId, {
@@ -266,7 +264,7 @@ function drawSlots() {
         'fill-extrusion-color': color,
         'fill-extrusion-height': isTarget ? 2 : 1,
         'fill-extrusion-base': 0,
-        'fill-extrusion-opacity': slot.status === 'occupied' ? 0.7 : isTarget ? 0.6 : 0.4
+        'fill-extrusion-opacity': slot.status === 'diambil' ? 0.7 : isTarget ? 0.6 : 0.4
       }
     })
 
@@ -277,6 +275,18 @@ function drawSlots() {
       source: srcId,
       paint: { 'line-color': color, 'line-width': isTarget ? 4 : 2 }
     })
+
+    // Label nama slot (Cuma buat target)
+    if (isTarget) {
+      const el = document.createElement('div')
+      el.className = 'slot-3d-label'
+      el.innerHTML = `<span>${slot.name}</span>`
+      
+      if (slotLabelMarker) slotLabelMarker.remove()
+      slotLabelMarker = new maplibregl.Marker({ element: el })
+        .setLngLat([lng, lat])
+        .addTo(map)
+    }
   })
 }
 
@@ -300,8 +310,8 @@ async function fetchRoute(fromLat, fromLng, toLat, toLng) {
       // Fallback garis lurus kalau OSRM ga bisa route
       drawRoute([[fLng, fLat], [tLng, tLat]])
     }
-  } catch {
-    // Network error - garis lurus
+  } catch (err) {
+    console.warn('OSRM route fetch failed, using straight line:', err.message)
     const fLng = parseFloat(fromLng)
     const fLat = parseFloat(fromLat)
     const tLng = parseFloat(toLng)
@@ -367,14 +377,6 @@ function updateRouteStart(lng, lat) {
 }
 
 // ===== UPDATE POSITION (sticky + rotate) =====
-function calcHeading(lat1, lng1, lat2, lng2) {
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180)
-  const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
-            Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLng)
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360
-}
-
 function updateUserPosition(lat, lng) {
   if (!map) return
 
@@ -541,10 +543,10 @@ defineExpose({ recenter, updateUserPosition, fetchRoute })
   position: absolute;
   bottom: 16px;
   right: 16px;
-  display: flex;
+  display: flex !important;
   flex-direction: column;
   gap: 8px;
-  z-index: 10;
+  z-index: 9999 !important;
 }
 
 .fullscreen .map-controls {
@@ -579,11 +581,31 @@ defineExpose({ recenter, updateUserPosition, fetchRoute })
   position: absolute;
   bottom: 16px;
   left: 16px;
-  z-index: 10;
+  z-index: 9999 !important;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
+}
+
+/* Slot 3D Label */
+.slot-3d-label {
+  background: rgba(15,23,42,0.9);
+  border: 1px solid rgba(34,197,94,0.6);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  pointer-events: none;
+  z-index: 2000;
+}
+.slot-3d-label span {
+  display: block;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
 }
 .joy-mid { display: flex; align-items: center; gap: 2px; }
 

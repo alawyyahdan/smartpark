@@ -269,15 +269,15 @@
               v-for="slot in unassignedSlots" 
               :key="slot.id"
               class="slot-card"
-              :class="{ occupied: slot.status === 'occupied' }"
+              :class="{ occupied: slot.status === 'diambil' }"
               @click="editSlot(slot)"
             >
               <div class="slot-top">
-                <div class="slot-led" :class="slot.status === 'available' ? 'led-green' : 'led-red'"></div>
+                <div class="slot-led" :class="slot.status === 'tersedia' ? 'led-green' : 'led-red'"></div>
                 <div class="slot-name">{{ slot.name }}</div>
               </div>
-              <div class="slot-status-text" :class="slot.status === 'available' ? 'text-green' : 'text-red'">
-                {{ slot.status === 'available' ? 'Kosong' : 'Terisi' }}
+              <div class="slot-status-text" :class="slot.status === 'tersedia' ? 'text-green' : 'text-red'">
+                {{ slot.status === 'tersedia' ? 'Kosong' : 'Terisi' }}
               </div>
             </div>
           </div>
@@ -331,15 +331,15 @@
               v-for="slot in getSlotsByArea(area.id)" 
               :key="slot.id"
               class="slot-card"
-              :class="{ occupied: slot.status === 'occupied', 'slot-debug': debugMode }"
+              :class="{ occupied: slot.status === 'diambil', 'slot-debug': debugMode }"
               @click="debugMode ? debugToggleSlot(slot) : editSlot(slot)"
             >
               <div class="slot-top">
-                <div class="slot-led" :class="slot.status === 'available' ? 'led-green' : 'led-red'"></div>
+                <div class="slot-led" :class="slot.status === 'tersedia' ? 'led-green' : 'led-red'"></div>
                 <div class="slot-name">{{ slot.name }}</div>
               </div>
-              <div class="slot-status-text" :class="slot.status === 'available' ? 'text-green' : 'text-red'">
-                {{ slot.status === 'available' ? 'Kosong' : 'Terisi' }}
+              <div class="slot-status-text" :class="slot.status === 'tersedia' ? 'text-green' : 'text-red'">
+                {{ slot.status === 'tersedia' ? 'Kosong' : 'Terisi' }}
               </div>
               <div class="slot-meta">
                 <span v-if="slot.lat && slot.lng" class="slot-coord-badge">
@@ -349,10 +349,11 @@
                   GPS
                 </span>
                 <span v-else class="slot-coord-badge no-gps">No GPS</span>
-                <span class="slot-mqtt-badge" v-if="slot.mqtt_topic">
+                <span class="slot-mqtt-badge slot-mqtt-tooltip-wrap" v-if="slot.mqtt_topic">
                   <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                   </svg>
+                  <span class="slot-mqtt-tip">{{ slot.mqtt_topic }}</span>
                 </span>
               </div>
               <div v-if="debugMode" class="slot-debug-badge">click = toggle</div>
@@ -799,7 +800,7 @@
                   <span>Reset: kosongkan slot. Hapus: hapus permanen area, slot & gate</span>
                 </div>
                 <div class="danger-btn-group">
-                  <button class="btn-danger" @click="resetSlots" :disabled="dangerLoading" title="Set slot ke available">
+                  <button class="btn-danger" @click="resetSlots" :disabled="dangerLoading" title="Set slot ke tersedia">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
                     </svg>
@@ -945,8 +946,8 @@
           <div class="form-group">
             <label>Status</label>
             <select v-model="slotForm.status">
-              <option value="available">Tersedia</option>
-              <option value="occupied">Terisi</option>
+              <option value="tersedia">Tersedia</option>
+              <option value="diambil">Terisi</option>
             </select>
           </div>
           <div class="form-group">
@@ -1079,6 +1080,27 @@ import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
 import { invalidateBrandingCache } from '../router/index.js'
+import { getStatusLabel, formatDateTime, formatNumber } from '../lib/formatters.js'
+
+const DEFAULT_SETTINGS = [
+  { key: 'pricing_mode', value: 'per_hour' },
+  { key: 'price_first_hour', value: '5000' },
+  { key: 'price_per_minute', value: '100' },
+  { key: 'price_after_first_hour', value: '3000' },
+  { key: 'special_price_enabled', value: 'false' },
+  { key: 'free_parking_enabled', value: 'false' },
+  { key: 'free_duration', value: '0' },
+  { key: 'free_duration_unit', value: 'minute' },
+  { key: 'price_threshold', value: '1' },
+  { key: 'threshold_unit', value: 'hour' },
+  { key: 'idle_timeout', value: '20' },
+  { key: 'exit_cooldown', value: '5' },
+  { key: 'ticket_prefix', value: 'SP' },
+  { key: 'app_name', value: 'SmartPark' },
+  { key: 'app_favicon', value: '' },
+  { key: 'map_engine', value: 'maplibre' },
+  { key: 'nav_line_color', value: '#4285F4' },
+]
 
 import SlotMapPicker from '../components/SlotMapPicker.vue'
 import MapCenterPicker from '../components/MapCenterPicker.vue'
@@ -1158,7 +1180,6 @@ const gateAccounts = ref([])
 const showGateModal = ref(false)
 const showGateAccountModal = ref(false)
 const editingGate = ref(null)
-const editingGateAccount = ref(null)
 const gateForm = ref({ gate_number: '', name: '', lat: null, lng: null })
 const gateAccountForm = ref({ username: '', password: '' })
 
@@ -1182,7 +1203,7 @@ const showSlotModal = ref(false)
 const editingArea = ref(null)
 const editingSlot = ref(null)
 const areaForm = ref({ name: '', floor: '', description: '', mqtt_prefix: '' })
-const slotForm = ref({ name: '', status: 'available', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 })
+const slotForm = ref({ name: '', status: 'tersedia', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 })
 
 // Settings
 const settings = ref({
@@ -1401,7 +1422,12 @@ async function startMqttBridge() {
     showToast('Broker URL belum diisi!', 'error')
     return
   }
+  // Save MQTT settings dulu sebelum enable bridge
+  // (antisipasi user belum blur dari input)
   await supabase.from('settings').upsert([
+    { key: 'mqtt_broker', value: String(settings.value.mqtt_broker || ''), updated_at: new Date().toISOString() },
+    { key: 'mqtt_username', value: String(settings.value.mqtt_username || ''), updated_at: new Date().toISOString() },
+    { key: 'mqtt_password', value: String(settings.value.mqtt_password || ''), updated_at: new Date().toISOString() },
     { key: 'mqtt_enabled', value: 'true', updated_at: new Date().toISOString() }
   ], { onConflict: 'key' })
   showToast('Bridge dinyalakan — menunggu koneksi...', 'info')
@@ -1651,7 +1677,7 @@ function resetSlots() {
       dangerLoading.value = true
       try {
         const { error } = await supabase.from('parking_slots')
-          .update({ status: 'available', locked_by: null, updated_at: new Date().toISOString() })
+          .update({ status: 'tersedia', locked_by: null, updated_at: new Date().toISOString() })
           .not('id', 'is', null)
         if (error) throw error
         
@@ -1669,7 +1695,7 @@ function resetSlots() {
 function unlockAllSlots() {
   showConfirm({
     title: 'Unlock Semua Lock',
-    message: 'Lepas semua slot yang sedang di-lock pengunjung?<br><br>Status slot (available/occupied) <b>tidak akan berubah</b>. Hanya lock-nya yang dihapus.',
+    message: 'Lepas semua slot yang sedang di-lock pengunjung?<br><br>Status slot (tersedia/diambil) <b>tidak akan berubah</b>. Hanya lock-nya yang dihapus.',
     confirmText: 'Unlock Semua',
     danger: false,
     onConfirm: async () => {
@@ -1736,27 +1762,8 @@ function resetSettings() {
     onConfirm: async () => {
       dangerLoading.value = true
       try {
-        const defaults = [
-          { key: 'pricing_mode', value: 'per_hour' },
-          { key: 'price_first_hour', value: '5000' },
-          { key: 'price_per_minute', value: '100' },
-          { key: 'price_after_first_hour', value: '3000' },
-          { key: 'special_price_enabled', value: 'false' },
-          { key: 'free_parking_enabled', value: 'false' },
-          { key: 'free_duration', value: '0' },
-          { key: 'free_duration_unit', value: 'minute' },
-          { key: 'price_threshold', value: '1' },
-          { key: 'threshold_unit', value: 'hour' },
-          { key: 'idle_timeout', value: '20' },
-          { key: 'exit_cooldown', value: '5' },
-          { key: 'ticket_prefix', value: 'SP' },
-          { key: 'app_name', value: 'SmartPark' },
-          { key: 'app_favicon', value: '' },
-          { key: 'map_engine', value: 'maplibre' },
-          { key: 'nav_line_color', value: '#4285F4' },
-        ]
         const { error } = await supabase.from('settings')
-          .upsert(defaults.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
+          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
         if (error) throw error
         
         showToast('✅ Settings direset ke default', 'success')
@@ -1790,31 +1797,12 @@ function resetSemua() {
 
         // Reset slots
         const { error: slotErr } = await supabase.from('parking_slots')
-          .update({ status: 'available', locked_by: null, updated_at: new Date().toISOString() })
+          .update({ status: 'tersedia', locked_by: null, updated_at: new Date().toISOString() })
           .not('id', 'is', null)
         if (slotErr) throw slotErr
         // Reset settings
-        const defaults = [
-          { key: 'pricing_mode', value: 'per_hour' },
-          { key: 'price_first_hour', value: '5000' },
-          { key: 'price_per_minute', value: '100' },
-          { key: 'price_after_first_hour', value: '3000' },
-          { key: 'special_price_enabled', value: 'false' },
-          { key: 'free_parking_enabled', value: 'false' },
-          { key: 'free_duration', value: '0' },
-          { key: 'free_duration_unit', value: 'minute' },
-          { key: 'price_threshold', value: '1' },
-          { key: 'threshold_unit', value: 'hour' },
-          { key: 'idle_timeout', value: '20' },
-          { key: 'exit_cooldown', value: '5' },
-          { key: 'ticket_prefix', value: 'SP' },
-          { key: 'app_name', value: 'SmartPark' },
-          { key: 'app_favicon', value: '' },
-          { key: 'map_engine', value: 'maplibre' },
-          { key: 'nav_line_color', value: '#4285F4' },
-        ]
         const { error: setErr } = await supabase.from('settings')
-          .upsert(defaults.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
+          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
         if (setErr) throw setErr
         
         showToast('✅ Reset semua selesai!', 'success')
@@ -1865,27 +1853,8 @@ function hapusSemua() {
         if (accErr) throw accErr
         
         // Reset settings
-        const defaults = [
-          { key: 'pricing_mode', value: 'per_hour' },
-          { key: 'price_first_hour', value: '5000' },
-          { key: 'price_per_minute', value: '100' },
-          { key: 'price_after_first_hour', value: '3000' },
-          { key: 'special_price_enabled', value: 'false' },
-          { key: 'free_parking_enabled', value: 'false' },
-          { key: 'free_duration', value: '0' },
-          { key: 'free_duration_unit', value: 'minute' },
-          { key: 'price_threshold', value: '1' },
-          { key: 'threshold_unit', value: 'hour' },
-          { key: 'idle_timeout', value: '20' },
-          { key: 'exit_cooldown', value: '5' },
-          { key: 'ticket_prefix', value: 'SP' },
-          { key: 'app_name', value: 'SmartPark' },
-          { key: 'app_favicon', value: '' },
-          { key: 'map_engine', value: 'maplibre' },
-          { key: 'nav_line_color', value: '#4285F4' },
-        ]
         const { error: setErr } = await supabase.from('settings')
-          .upsert(defaults.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
+          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
         if (setErr) throw setErr
         
         showToast('✅ Pembersihan total berhasil dieksekusi!', 'success')
@@ -1902,20 +1871,6 @@ function hapusSemua() {
       }
     }
   })
-}
-
-async function updateSlotTopic(slot, topic) {
-  try {
-    await supabase
-      .from('parking_slots')
-      .update({ mqtt_topic: topic, updated_at: new Date().toISOString() })
-      .eq('id', slot.id)
-    
-    slot.mqtt_topic = topic
-    console.log(`Slot ${slot.name} topic updated:`, topic)
-  } catch (err) {
-    console.error('Update slot topic error:', err)
-  }
 }
 
 async function fetchTickets() {
@@ -1983,11 +1938,6 @@ function getSlotsByArea(areaId) {
 
 function getAreaSlotCount(areaId) {
   return getSlotsByArea(areaId).length
-}
-
-function getMqttAddress(area, slot) {
-  const prefix = area.mqtt_prefix || ''
-  return prefix ? `${prefix}${slot.name}` : 'prefix belum diset'
 }
 
 async function updateAreaMqttPrefix(area, prefix) {
@@ -2131,7 +2081,7 @@ const otherSlotsForPicker = computed(() => {
 
 function addSlotToArea(area) {
   editingSlot.value = null
-  slotForm.value = { name: '', status: 'available', area_id: area.id, lat: null, lng: null, rotation: 0 }
+  slotForm.value = { name: '', status: 'tersedia', area_id: area.id, lat: null, lng: null, rotation: 0 }
   showSlotModal.value = true
 }
 
@@ -2182,7 +2132,7 @@ async function saveSlot() {
 
     showSlotModal.value = false
     editingSlot.value = null
-    slotForm.value = { name: '', status: 'available', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 }
+    slotForm.value = { name: '', status: 'tersedia', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 }
     showToast('✅ Slot berhasil disimpan', 'success')
     fetchSlots()
     calculateStats()
@@ -2209,7 +2159,7 @@ async function deleteSlot() {
           .eq('id', editingSlot.value.id)
         if (error) throw error
         editingSlot.value = null
-        slotForm.value = { name: '', status: 'available', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 }
+        slotForm.value = { name: '', status: 'tersedia', area_id: null, lat: null, lng: null, rotation: 0, slot_width: 3, slot_height: 5 }
         showToast(`✅ Slot ${slotName} berhasil dihapus`, 'success')
         fetchSlots()
         calculateStats()
@@ -2224,7 +2174,7 @@ async function deleteSlot() {
 async function debugToggleSlot(slot) {
   if (!debugMode.value) return
   
-  const newStatus = slot.status === 'available' ? 'occupied' : 'available'
+  const newStatus = slot.status === 'tersedia' ? 'diambil' : 'tersedia'
   
   try {
     const { error } = await supabase
@@ -2252,126 +2202,17 @@ function calculateStats() {
   ).length
 
   stats.value.currentlyParked = slots.value.filter(s => 
-    s.status === 'occupied'
+    s.status === 'diambil'
   ).length
 
   stats.value.availableSlots = slots.value.filter(s => 
-    s.status === 'available'
+    s.status === 'tersedia'
   ).length
 
   // Pendapatan: dari tiket done yang DIBAYAR hari ini (pakai exited_at)
   stats.value.todayRevenue = tickets.value
     .filter(t => t.status === 'done' && t.exited_at && new Date(t.exited_at) >= today)
     .reduce((sum, t) => sum + (t.cost || 0), 0)
-}
-
-function calculatePrice(durationMinutes) {
-  // Check free parking first
-  if (freeParkingEnabled.value) {
-    let freeMinutes = parseInt(settings.value.free_duration || 0)
-    const freeUnit = settings.value.free_duration_unit || 'minute'
-    
-    if (freeUnit === 'hour') freeMinutes *= 60
-    else if (freeUnit === 'second') freeMinutes /= 60
-    
-    if (durationMinutes <= freeMinutes) {
-      return 0 // Free!
-    }
-    
-    // Subtract free duration from total
-    durationMinutes -= freeMinutes
-  }
-  
-  const mode = settings.value.pricing_mode
-  
-  if (mode === 'per_minute') {
-    const pricePerMin = parseInt(settings.value.price_per_minute || 0)
-    
-    if (specialPriceEnabled.value) {
-      // Convert threshold to minutes based on unit
-      let thresholdMinutes = parseInt(settings.value.price_threshold || 60)
-      const unit = settings.value.threshold_unit || 'minute'
-      
-      if (unit === 'hour') thresholdMinutes *= 60
-      else if (unit === 'second') thresholdMinutes /= 60
-      
-      if (durationMinutes > thresholdMinutes) {
-        const beforeThreshold = thresholdMinutes * pricePerMin
-        const afterMinutes = durationMinutes - thresholdMinutes
-        const afterPrice = afterMinutes * parseInt(settings.value.price_after_first_hour || 0)
-        return beforeThreshold + afterPrice
-      } else {
-        return durationMinutes * pricePerMin
-      }
-    } else {
-      return durationMinutes * pricePerMin
-    }
-  }
-  
-  if (mode === 'per_hour') {
-    const hours = Math.ceil(durationMinutes / 60)
-    const pricePerHour = parseInt(settings.value.price_first_hour || 0)
-    
-    if (specialPriceEnabled.value) {
-      // Convert threshold to hours based on unit
-      let thresholdHours = parseInt(settings.value.price_threshold || 1)
-      const unit = settings.value.threshold_unit || 'hour'
-      
-      if (unit === 'minute') thresholdHours /= 60
-      else if (unit === 'second') thresholdHours /= 3600
-      
-      const thresholdHoursCeil = Math.ceil(thresholdHours)
-      
-      if (hours > thresholdHoursCeil) {
-        const beforeThreshold = thresholdHoursCeil * pricePerHour
-        const afterHours = hours - thresholdHoursCeil
-        const afterPrice = afterHours * parseInt(settings.value.price_after_first_hour || 0)
-        return beforeThreshold + afterPrice
-      } else {
-        return hours * pricePerHour
-      }
-    } else {
-      return hours * pricePerHour
-    }
-  }
-  
-  return 0
-}
-
-function getStatusLabel(status) {
-  const labels = {
-    active: 'Aktif',
-    parked: 'Parkir',
-    exiting: 'Keluar',
-    done: 'Selesai',
-    expired: 'Expired'
-  }
-  return labels[status] || status
-}
-
-function formatDateTime(isoStr) {
-  if (!isoStr) return '—'
-  const date = new Date(isoStr)
-  return date.toLocaleString('id-ID', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
-function formatNumber(num) {
-  return new Intl.NumberFormat('id-ID').format(num)
-}
-
-function getUnitLabel(unit) {
-  const labels = {
-    second: 'detik',
-    minute: 'menit',
-    hour: 'jam'
-  }
-  return labels[unit] || 'jam'
 }
 
 function viewImage(url) {
@@ -2474,10 +2315,10 @@ function openAddGateAccount() {
 
 async function saveGateAccount() {
   try {
-    const { error } = await supabase.from('gate_accounts').insert([{
-      username: gateAccountForm.value.username,
-      password: gateAccountForm.value.password
-    }])
+    const { error } = await supabase.rpc('create_gate_account', {
+      p_username: gateAccountForm.value.username,
+      p_password: gateAccountForm.value.password
+    })
     if (error) throw error
     showGateAccountModal.value = false
     showToast('Akun berhasil dibuat', 'success')
@@ -2530,7 +2371,7 @@ onMounted(async () => {
   }
   await fetchMqttLogs()
 
-  // Polling fallback tiap 3 detik - handle kasus realtime settings ga aktif
+  // Real-time polling MQTT state
   mqttPollInterval = setInterval(pollMqttState, 500)
 })
 
@@ -3436,6 +3277,46 @@ onUnmounted(() => {
   color: #a5b4fc;
   padding: 2px 5px;
 }
+
+/* MQTT Tooltip on hover */
+.slot-mqtt-tooltip-wrap {
+  position: relative;
+  cursor: help;
+}
+
+.slot-mqtt-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e293b;
+  border: 1px solid rgba(99,102,241,0.4);
+  color: #a5b4fc;
+  font-size: 9px;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.slot-mqtt-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: rgba(99,102,241,0.4);
+}
+
+.slot-mqtt-tooltip-wrap:hover .slot-mqtt-tip {
+  display: block;
+}
+
 
 .slot-debug-badge {
   position: absolute;

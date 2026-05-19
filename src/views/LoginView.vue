@@ -53,7 +53,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
 
@@ -65,7 +65,6 @@ const loading = ref(false)
 const error = ref('')
 const appName = ref('SmartPark')
 
-import { onMounted } from 'vue'
 onMounted(async () => {
   const { data } = await supabase.from('settings').select('key, value').in('key', ['app_name', 'app_favicon'])
   if (data) {

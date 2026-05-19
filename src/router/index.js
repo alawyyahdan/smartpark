@@ -94,7 +94,11 @@ export function invalidateBrandingCache() {
 }
 
 router.beforeEach(async (to) => {
-  await applyBranding(to.meta.titleSuffix || '')
+  try {
+    await applyBranding(to.meta.titleSuffix || '')
+  } catch (err) {
+    console.warn('Branding fetch failed:', err.message)
+  }
 
   // Check auth for protected routes
   if (to.meta.requiresAuth) {

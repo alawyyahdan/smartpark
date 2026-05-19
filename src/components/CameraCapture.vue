@@ -56,7 +56,10 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 
-const emit = defineEmits(['captured'])
+const CAMERA_WIDTH = 1280
+const CAMERA_HEIGHT = 720
+const JPEG_QUALITY = 0.85
+const FLASH_DURATION_MS = 200
 
 const videoRef = ref(null)
 const canvasRef = ref(null)
@@ -73,8 +76,8 @@ async function startCamera() {
     // Request camera access
     const mediaStream = await navigator.mediaDevices.getUserMedia({
       video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+        width: { ideal: CAMERA_WIDTH },
+        height: { ideal: CAMERA_HEIGHT },
         facingMode: 'environment' // Prefer back camera on mobile
       },
       audio: false
@@ -121,16 +124,16 @@ async function captureImage() {
   return new Promise((resolve) => {
     canvas.toBlob((blob) => {
       // Also get data URL for preview
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+      const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY)
       capturedImage.value = dataUrl
       
       // Flash effect
       setTimeout(() => {
         isCapturing.value = false
-      }, 200)
+      }, FLASH_DURATION_MS)
 
       resolve({ blob, dataUrl })
-    }, 'image/jpeg', 0.85)
+    }, 'image/jpeg', JPEG_QUALITY)
   })
 }
 

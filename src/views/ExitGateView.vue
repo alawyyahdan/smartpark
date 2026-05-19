@@ -62,8 +62,22 @@
         </div>
 
         <!-- Foto Kendaraan -->
-        <div v-if="ticketData.vehicle_image" class="exit-photo-section">
-          <img :src="ticketData.vehicle_image" class="exit-vehicle-img" />
+        <div v-if="ticketData.vehicle_image" class="exit-photo-wrap">
+          <div class="exit-photo-label">Foto Kendaraan Masuk</div>
+          <div class="exit-photo-frame" @click="openLightbox(ticketData.vehicle_image)">
+            <img :src="ticketData.vehicle_image" alt="Foto kendaraan" />
+            <div class="exit-photo-zoom-hint">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+            </div>
+          </div>
+        </div>
+        <div v-else class="exit-no-photo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <span>Tidak ada foto kendaraan</span>
         </div>
 
         <!-- Detail Lengkap -->
@@ -156,6 +170,32 @@
         {{ lookupError }}
       </div>
     </div>
+
+    <!-- Photo Lightbox -->
+    <Teleport to="body">
+      <div v-if="lightboxOpen" class="lightbox-overlay" @click.self="closeLightbox">
+        <button class="lightbox-close" @click="closeLightbox">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div 
+          class="lightbox-img-wrap" 
+          @wheel.prevent="onLightboxWheel"
+          @mousedown="onDragStart"
+          @mousemove="onDragMove"
+          @mouseup="onDragEnd"
+          @mouseleave="onDragEnd"
+          @touchstart.prevent="onTouchStart"
+          @touchmove.prevent="onTouchMove"
+          @touchend="onDragEnd"
+        >
+          <img 
+            :src="lightboxSrc" 
+            :style="{ transform: `translate(${lightboxX}px, ${lightboxY}px) scale(${lightboxZoom})` }" 
+            draggable="false" 
+          />
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -163,9 +203,73 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
+import { getStatusLabel, formatDateTime, formatNumber, getUnitLabel } from '../lib/formatters.js'
 
 const route = useRoute()
 const gateNumber = ref(route.query.gate || '1')
+
+// Lightbox
+const lightboxOpen = ref(false)
+const lightboxSrc = ref('')
+const lightboxZoom = ref(1)
+const lightboxX = ref(0)
+const lightboxY = ref(0)
+let isDragging = false
+let dragStartX = 0
+let dragStartY = 0
+let dragOffsetX = 0
+let dragOffsetY = 0
+
+function openLightbox(src) {
+  lightboxSrc.value = src
+  lightboxZoom.value = 1
+  lightboxX.value = 0
+  lightboxY.value = 0
+  lightboxOpen.value = true
+}
+
+function closeLightbox() {
+  lightboxOpen.value = false
+}
+
+function onLightboxWheel(e) {
+  const delta = e.deltaY > 0 ? -0.2 : 0.2
+  lightboxZoom.value = Math.min(Math.max(lightboxZoom.value + delta, 0.5), 6)
+}
+
+function onDragStart(e) {
+  isDragging = true
+  dragStartX = e.clientX - dragOffsetX
+  dragStartY = e.clientY - dragOffsetY
+}
+
+function onDragMove(e) {
+  if (!isDragging) return
+  dragOffsetX = e.clientX - dragStartX
+  dragOffsetY = e.clientY - dragStartY
+  lightboxX.value = dragOffsetX
+  lightboxY.value = dragOffsetY
+}
+
+function onDragEnd() {
+  isDragging = false
+}
+
+function onTouchStart(e) {
+  if (e.touches.length === 1) {
+    isDragging = true
+    dragStartX = e.touches[0].clientX - dragOffsetX
+    dragStartY = e.touches[0].clientY - dragOffsetY
+  }
+}
+
+function onTouchMove(e) {
+  if (!isDragging || e.touches.length !== 1) return
+  dragOffsetX = e.touches[0].clientX - dragStartX
+  dragOffsetY = e.touches[0].clientY - dragStartY
+  lightboxX.value = dragOffsetX
+  lightboxY.value = dragOffsetY
+}
 
 // Login
 const loggedIn = ref(false)
@@ -199,18 +303,19 @@ async function handleLogin() {
   loginError.value = ''
 
   try {
-    const { data, error } = await supabase
-      .from('gate_accounts')
-      .select('*')
-      .eq('username', loginForm.value.username)
-      .eq('password', loginForm.value.password)
-      .single()
+    const { data: rpcData, error } = await supabase
+      .rpc('verify_gate_login', {
+        p_username: loginForm.value.username,
+        p_password: loginForm.value.password
+      })
 
-    if (error || !data) {
+    if (error || !rpcData || rpcData.length === 0) {
       loginError.value = 'Username atau password salah'
       loginLoading.value = false
       return
     }
+
+    const data = rpcData[0]
 
     // Login berhasil - set online + current gate
     const gateId = await getGateId()
@@ -356,7 +461,7 @@ async function processExit() {
     // Free up slot
     await supabase
       .from('parking_slots')
-      .update({ status: 'available', locked_by: null })
+      .update({ status: 'tersedia', locked_by: null })
       .eq('locked_by', ticketData.value.id)
 
     ticketData.value.status = 'done'
@@ -374,6 +479,8 @@ async function processExit() {
       if (ticketInput.value) ticketInput.value.focus()
     }, 5000)
   } catch (err) {
+    console.error('Process exit error:', err)
+    lookupError.value = 'Gagal memproses: ' + err.message
     processLoading.value = false
   }
 }
@@ -438,23 +545,7 @@ function calcPrice(createdAt) {
   return 0
 }
 
-function getStatusLabel(status) {
-  const map = { active: 'Aktif', parked: 'Parkir', exiting: 'Proses Keluar', done: 'Selesai', expired: 'Expired' }
-  return map[status] || status
-}
 
-function formatDateTime(iso) {
-  return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-function formatNumber(n) {
-  return new Intl.NumberFormat('id-ID').format(n)
-}
-
-function getUnitLabel(unit) {
-  const map = { second: 'detik', minute: 'menit', hour: 'jam' }
-  return map[unit] || 'menit'
-}
 
 onMounted(async () => {
   gateNumber.value = route.query.gate || '1'
@@ -761,17 +852,65 @@ onUnmounted(() => {
 .offline-dot { background: #ef4444; }
 
 /* Photo */
-.exit-photo-section {
-  margin-bottom: 16px;
+.exit-photo-wrap {
+  margin-bottom: 20px;
+}
+
+.exit-photo-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.exit-photo-frame {
+  position: relative;
+  width: 100%;
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid rgba(255,255,255,0.1);
+  background: #000;
+  cursor: pointer;
 }
 
-.exit-vehicle-img {
+.exit-photo-frame:hover { border-color: rgba(99,102,241,0.4); }
+
+.exit-photo-frame img {
+  display: block;
   width: 100%;
-  max-height: 200px;
+  height: auto;
+  min-height: 120px;
+  max-height: 300px;
   object-fit: cover;
+}
+
+.exit-photo-zoom-hint {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: white;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.exit-photo-frame:hover .exit-photo-zoom-hint { opacity: 1; }
+
+.exit-no-photo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  color: #475569;
+  font-size: 13px;
+  background: rgba(255,255,255,0.03);
+  border: 1px dashed rgba(255,255,255,0.08);
+  border-radius: 10px;
 }
 
 /* Duration highlight */
@@ -874,5 +1013,66 @@ onUnmounted(() => {
 @keyframes fadeIn {
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }
+}
+
+/* Lightbox */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lbFadeIn 0.2s ease;
+}
+
+@keyframes lbFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.12);
+  color: white;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.lightbox-close:hover { background: rgba(255,255,255,0.25); }
+
+.lightbox-img-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: grab;
+}
+.lightbox-img-wrap:active { cursor: grabbing; }
+
+.lightbox-img-wrap img {
+  max-width: 90%;
+  max-height: 90%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  transition: transform 0.1s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
 }
 </style>

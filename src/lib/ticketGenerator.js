@@ -20,7 +20,7 @@ export function generateTicketCode(sequence, prefix = 'SP') {
  * @param {string} ticketId
  * @param {string} appUrl - URL website dari settings
  */
-export async function generateQRDataUrl(ticketId, appUrl = 'http://localhost:5173') {
+export async function generateQRDataUrl(ticketId, appUrl) {
   const url = `${appUrl}/visitor?t=${ticketId}`
   return await QRCode.toDataURL(url, {
     width: 300,
@@ -35,10 +35,10 @@ export async function generateQRDataUrl(ticketId, appUrl = 'http://localhost:517
  * @param {object} ticket
  * @param {string} appName - Nama aplikasi dari settings
  */
-export async function printThermalPDF(ticket, appUrl = 'http://localhost:5173', appName = 'SmartPark') {
+export async function printThermalPDF(ticket, appUrl, appName = 'SmartPark') {
   const doc = new jsPDF({
     unit: 'mm',
-    format: [80, 120], // 80mm width, 120mm height
+    format: [80, 130], // 80mm width, 130mm height (diperpanjang untuk warning)
     orientation: 'portrait'
   })
 
@@ -62,7 +62,7 @@ export async function printThermalPDF(ticket, appUrl = 'http://localhost:5173', 
 
   doc.setFontSize(7)
   doc.setFont('helvetica', 'normal')
-  doc.text('Sistem Parkir Cerdas', 40, 16, { align: 'center' })
+  doc.text('Sistem Manajemen Parkir', 40, 16, { align: 'center' })
 
   // Divider
   doc.setDrawColor(99, 102, 241)
@@ -96,11 +96,23 @@ export async function printThermalPDF(ticket, appUrl = 'http://localhost:5173', 
 
   // Footer
   doc.setFillColor(248, 250, 252)
-  doc.rect(0, 102, 80, 18, 'F')
+  doc.rect(0, 100, 80, 30, 'F')
+
+  // Divider atas footer
+  doc.setDrawColor(220, 220, 220)
+  doc.setLineWidth(0.3)
+  doc.line(5, 101, 75, 101)
+
   doc.setFontSize(6)
-  doc.setTextColor(148, 163, 184)
-  doc.text('Simpan tiket ini hingga kendaraan keluar', 40, 109, { align: 'center' })
-  doc.text('smartpark.local', 40, 115, { align: 'center' })
+  doc.setFont('helvetica', 'bold')
+  doc.setTextColor(80, 80, 80)
+  doc.text('PERHATIAN', 40, 107, { align: 'center' })
+
+  doc.setFont('helvetica', 'normal')
+  doc.setTextColor(110, 120, 140)
+  doc.text('Jangan meninggalkan tiket dan barang', 40, 113, { align: 'center' })
+  doc.text('berharga di dalam kendaraan Anda.', 40, 118, { align: 'center' })
+  doc.text('Simpan tiket ini hingga kendaraan keluar.', 40, 123, { align: 'center' })
 
   // Save
   doc.save(`tiket-${ticket.ticket_code}.pdf`)

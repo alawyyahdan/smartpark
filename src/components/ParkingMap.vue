@@ -44,10 +44,11 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { computeSlotCorners, calcHeading, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
 
 const props = defineProps({
-  userLat: { type: Number, default: -7.2650876 },
-  userLng: { type: Number, default: 112.783217 },
+  userLat: { type: Number, default: DEFAULT_LAT },
+  userLng: { type: Number, default: DEFAULT_LNG },
   userHeading: { type: Number, default: 0 },
   targetSlot: { type: Object, default: null },
   slots: { type: Array, default: () => [] },
@@ -80,8 +81,14 @@ let prevLng = null
 const STEP = 0.00008
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving'
 
+let resizeObserver = null
+
 onMounted(() => initMap())
-onUnmounted(() => { stopMove(); if (map) map.remove() })
+onUnmounted(() => {
+  stopMove()
+  if (resizeObserver) resizeObserver.disconnect()
+  if (map) map.remove()
+})
 
 function initMap() {
   map = L.map(mapRef.value, {
@@ -96,7 +103,7 @@ function initMap() {
   }).addTo(map)
 
   // Fix map setengah abu-abu
-  const resizeObserver = new ResizeObserver(() => {
+  resizeObserver = new ResizeObserver(() => {
     if (map) map.invalidateSize()
   })
   resizeObserver.observe(mapRef.value)
@@ -152,14 +159,6 @@ function updateUserMarker(lat, lng, heading) {
   userCircle.setLatLng([lat, lng])
 }
 
-function calcHeading(lat1, lng1, lat2, lng2) {
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180)
-  const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
-            Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLng)
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360
-}
-
 // ===== OSRM ROUTING (ikut jalan) =====
 async function fetchRoute(fromLat, fromLng, toLat, toLng) {
   try {
@@ -210,35 +209,29 @@ function drawSlots() {
 
   props.slots.forEach(slot => {
     if (!slot.lat || !slot.lng) return
-
     const isTarget = props.targetSlot && props.targetSlot.name === slot.name
-    const color = slot.status === 'occupied' ? '#ef4444' : isTarget ? '#22c55e' : '#10b981'
+    if (!isTarget) return
+    const color = slot.status === 'diambil' ? '#ef4444' : '#22c55e'
     const rotation = parseFloat(slot.rotation || 0)
-    const METER_TO_DEG = 0.000009
     const widthM = parseFloat(slot.slot_width || 3)
     const heightM = parseFloat(slot.slot_height || 5)
-    const w = (widthM / 2) * METER_TO_DEG
-    const h = (heightM / 2) * METER_TO_DEG
-    const rad = (rotation * Math.PI) / 180
     const lat = parseFloat(slot.lat)
     const lng = parseFloat(slot.lng)
 
-    const corners = [[-h, -w], [-h, w], [h, w], [h, -w]].map(([dy, dx]) => {
-      const ry = dy * Math.cos(rad) - dx * Math.sin(rad)
-      const rx = dy * Math.sin(rad) + dx * Math.cos(rad)
-      return [lat + ry, lng + rx]
-    })
+    const corners = computeSlotCorners(lat, lng, rotation, widthM, heightM)
 
     const poly = L.polygon(corners, {
       color,
-      weight: isTarget ? 3 : 1.5,
-      fillOpacity: slot.status === 'occupied' ? 0.5 : isTarget ? 0.4 : 0.2,
+      weight: 3,
+      fillOpacity: slot.status === 'diambil' ? 0.5 : 0.4,
       fillColor: color
     }).addTo(map)
 
-    poly.bindTooltip(slot.name, {
-      permanent: true, direction: 'center', className: 'slot-label'
-    })
+    if (isTarget) {
+      poly.bindTooltip(slot.name, {
+        permanent: true, direction: 'center', className: 'slot-label'
+      })
+    }
 
     slotRectangles.push(poly)
   })
