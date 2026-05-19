@@ -204,6 +204,9 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
 import { getStatusLabel, formatDateTime, formatNumber, getUnitLabel } from '../lib/formatters.js'
+import { calcDuration as calcDurationLib, calcPrice as calcPriceLib } from '../lib/pricing.js'
+import { friendlyError } from '../lib/errorMessages.js'
+import { applyFavicon, applyTitle } from '../lib/branding.js'
 
 const route = useRoute()
 const gateNumber = ref(route.query.gate || '1')
@@ -303,10 +306,15 @@ async function handleLogin() {
   loginError.value = ''
 
   try {
+    // verify_gate_login now atomically marks the operator online + records the gate
+    // (see migration.sql). The web app no longer needs direct UPDATE access to
+    // the gate_accounts table — RLS denies it.
+    const gateId = await getGateId()
     const { data: rpcData, error } = await supabase
       .rpc('verify_gate_login', {
         p_username: loginForm.value.username,
-        p_password: loginForm.value.password
+        p_password: loginForm.value.password,
+        p_gate_id:  gateId
       })
 
     if (error || !rpcData || rpcData.length === 0) {
@@ -317,24 +325,15 @@ async function handleLogin() {
 
     const data = rpcData[0]
 
-    // Login berhasil - set online + current gate
-    const gateId = await getGateId()
-    await supabase
-      .from('gate_accounts')
-      .update({ is_online: true, current_gate: gateId, last_active: new Date().toISOString() })
-      .eq('id', data.id)
-
     accountId = data.id
     currentUser.value = data.username
     loggedIn.value = true
     loginLoading.value = false
 
-    // Start heartbeat
+    // Heartbeat via RPC (no direct table access).
     heartbeatInterval = setInterval(async () => {
-      await supabase
-        .from('gate_accounts')
-        .update({ last_active: new Date().toISOString() })
-        .eq('id', accountId)
+      if (!accountId) return
+      await supabase.rpc('gate_heartbeat', { p_account_id: accountId })
     }, 30000)
 
     // Load pricing
@@ -343,17 +342,14 @@ async function handleLogin() {
     // Focus input
     setTimeout(() => { if (ticketInput.value) ticketInput.value.focus() }, 100)
   } catch (err) {
-    loginError.value = err.message
+    loginError.value = friendlyError(err)
     loginLoading.value = false
   }
 }
 
 async function handleLogout() {
   if (accountId) {
-    await supabase
-      .from('gate_accounts')
-      .update({ is_online: false, current_gate: null })
-      .eq('id', accountId)
+    await supabase.rpc('gate_logout', { p_account_id: accountId })
   }
   if (heartbeatInterval) clearInterval(heartbeatInterval)
   loggedIn.value = false
@@ -432,7 +428,7 @@ async function lookupTicket() {
 
     lookupLoading.value = false
   } catch (err) {
-    lookupError.value = err.message
+    lookupError.value = friendlyError(err)
     lookupLoading.value = false
   }
 }
@@ -480,69 +476,17 @@ async function processExit() {
     }, 5000)
   } catch (err) {
     console.error('Process exit error:', err)
-    lookupError.value = 'Gagal memproses: ' + err.message
+    lookupError.value = 'Gagal memproses: ' + friendlyError(err)
     processLoading.value = false
   }
 }
 
 function calcDuration(createdAt) {
-  const mins = Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000)
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  if (h > 0) return `${h} jam ${m} menit`
-  return `${m} menit`
+  return calcDurationLib(createdAt)
 }
 
 function calcPrice(createdAt) {
-  const mins = Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000)
-  const mode = pricingSettings.value.pricing_mode || 'per_hour'
-  const specialEnabled = pricingSettings.value.special_price_enabled === 'true'
-  const freeEnabled = pricingSettings.value.free_parking_enabled === 'true'
-
-  let chargeableMins = mins
-
-  // Free parking
-  if (freeEnabled) {
-    let freeMins = parseInt(pricingSettings.value.free_duration || 0)
-    const freeUnit = pricingSettings.value.free_duration_unit || 'minute'
-    if (freeUnit === 'hour') freeMins *= 60
-    else if (freeUnit === 'second') freeMins /= 60
-    if (chargeableMins <= freeMins) return 0
-    chargeableMins -= freeMins
-  }
-
-  if (mode === 'per_minute') {
-    const rate = parseInt(pricingSettings.value.price_per_minute || 0)
-    if (specialEnabled) {
-      let threshold = parseInt(pricingSettings.value.price_threshold || 60)
-      const unit = pricingSettings.value.threshold_unit || 'minute'
-      if (unit === 'hour') threshold *= 60
-      else if (unit === 'second') threshold /= 60
-      if (chargeableMins > threshold) {
-        const afterRate = parseInt(pricingSettings.value.price_after_first_hour || 0)
-        return (threshold * rate) + ((chargeableMins - threshold) * afterRate)
-      }
-    }
-    return chargeableMins * rate
-  }
-
-  if (mode === 'per_hour') {
-    const hours = Math.ceil(chargeableMins / 60)
-    const rate = parseInt(pricingSettings.value.price_first_hour || 0)
-    if (specialEnabled) {
-      let threshold = parseInt(pricingSettings.value.price_threshold || 1)
-      const unit = pricingSettings.value.threshold_unit || 'hour'
-      if (unit === 'minute') threshold = Math.ceil(threshold / 60)
-      else if (unit === 'second') threshold = Math.ceil(threshold / 3600)
-      if (hours > threshold) {
-        const afterRate = parseInt(pricingSettings.value.price_after_first_hour || 0)
-        return (threshold * rate) + ((hours - threshold) * afterRate)
-      }
-    }
-    return hours * rate
-  }
-
-  return 0
+  return calcPriceLib(createdAt, pricingSettings.value)
 }
 
 
@@ -554,18 +498,28 @@ onMounted(async () => {
   const { data } = await supabase.from('settings').select('key, value').in('key', ['app_name', 'app_favicon'])
   if (data) {
     data.forEach(s => {
-      if (s.key === 'app_name' && s.value) document.title = s.value + ' — Gate Keluar'
-      if (s.key === 'app_favicon' && s.value) {
-        let link = document.querySelector("link[rel~='icon']")
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-        link.href = s.value
-      }
+      if (s.key === 'app_name' && s.value) applyTitle(s.value, '— Gate Keluar')
+      if (s.key === 'app_favicon' && s.value) applyFavicon(s.value)
     })
   }
 })
 
 onUnmounted(() => {
-  handleLogout()
+  // Always release the heartbeat interval first; this is sync and safe.
+  // Then fire-and-forget the offline mark via RPC. We do NOT await: onUnmounted
+  // has no async lifecycle and Vue won't keep the page alive for our promise.
+  // If the request loses the race with navigation the heartbeat watchdog
+  // (last_active timestamp going stale) will eventually mark the operator offline.
+  if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
+  if (accountId) {
+    const id = accountId
+    accountId = null
+    supabase.rpc('gate_logout', { p_account_id: id }).then(({ error }) => {
+      if (error) console.warn('Failed to mark gate offline on unmount:', error.message)
+    })
+  }
+  loggedIn.value = false
+  currentUser.value = ''
 })
 </script>
 

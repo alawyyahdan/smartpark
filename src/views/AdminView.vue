@@ -238,8 +238,8 @@
       <!-- Live Map - semua slot real-time -->
       <AdminSlotMap 
         :slots="slots" 
-        :centerLat="parseFloat(settings.default_lat) || -7.2650876"
-        :centerLng="parseFloat(settings.default_lng) || 112.783217"
+        :centerLat="parseFloat(settings.default_lat) || DEFAULT_LAT"
+        :centerLng="parseFloat(settings.default_lng) || DEFAULT_LNG"
       />
 
       <!-- Areas List -->
@@ -959,8 +959,8 @@
               :slotWidth="slotForm.slot_width || 3"
               :slotHeight="slotForm.slot_height || 5"
               :existingSlots="otherSlotsForPicker"
-              :defaultLat="parseFloat(settings.default_lat || -7.2650876)"
-              :defaultLng="parseFloat(settings.default_lng || 112.783217)"
+              :defaultLat="parseFloat(settings.default_lat || DEFAULT_LAT)"
+              :defaultLng="parseFloat(settings.default_lng || DEFAULT_LNG)"
               @update:lat="v => slotForm.lat = v"
               @update:lng="v => slotForm.lng = v"
               @update:rotation="v => slotForm.rotation = v"
@@ -1080,7 +1080,10 @@ import { ref, computed, onMounted, onUnmounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
 import { invalidateBrandingCache } from '../router/index.js'
-import { getStatusLabel, formatDateTime, formatNumber } from '../lib/formatters.js'
+import { getStatusLabel, formatDateTime, formatNumber, formatTimeWithSeconds } from '../lib/formatters.js'
+import { friendlyError } from '../lib/errorMessages.js'
+import { DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
+import { applyFavicon, applyTitle } from '../lib/branding.js'
 
 const DEFAULT_SETTINGS = [
   { key: 'pricing_mode', value: 'per_hour' },
@@ -1219,12 +1222,12 @@ const settings = ref({
   app_favicon: '',
   ticket_prefix: 'SP',
   idle_timeout: '20',
-  default_lat: '-7.2650876',
-  default_lng: '112.783217',
+  default_lat: String(DEFAULT_LAT),
+  default_lng: String(DEFAULT_LNG),
   exit_cooldown: '5',
   map_engine: 'maplibre',
   nav_line_color: '#4285F4',
-  app_url: 'http://localhost:5173',
+  app_url: '',
   mqtt_broker: '',
   mqtt_username: '',
   mqtt_password: ''
@@ -1323,12 +1326,10 @@ async function fetchSettings() {
       if (setting.key in settings.value) {
         settings.value[setting.key] = setting.value
         if (setting.key === 'app_name') {
-          document.title = setting.value + ' — Admin Panel'
+          applyTitle(setting.value, '— Admin Panel')
         }
         if (setting.key === 'app_favicon' && setting.value) {
-          let link = document.querySelector("link[rel~='icon']")
-          if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-          link.href = setting.value
+          applyFavicon(setting.value)
         }
       }
       if (setting.key === 'special_price_enabled') {
@@ -1375,11 +1376,9 @@ async function saveSettings() {
 
     // Apply branding langsung ke tab ini juga
     const appName = settings.value.app_name || 'SmartPark'
-    document.title = appName + ' — Admin Panel'
+    applyTitle(appName, '— Admin Panel')
     if (settings.value.app_favicon) {
-      let link = document.querySelector("link[rel~='icon']")
-      if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-      link.href = settings.value.app_favicon
+      applyFavicon(settings.value.app_favicon)
     }
     
     showToast('Pengaturan berhasil disimpan', 'success')
@@ -1424,12 +1423,18 @@ async function startMqttBridge() {
   }
   // Save MQTT settings dulu sebelum enable bridge
   // (antisipasi user belum blur dari input)
-  await supabase.from('settings').upsert([
+  const { error: upsertErr } = await supabase.from('settings').upsert([
     { key: 'mqtt_broker', value: String(settings.value.mqtt_broker || ''), updated_at: new Date().toISOString() },
     { key: 'mqtt_username', value: String(settings.value.mqtt_username || ''), updated_at: new Date().toISOString() },
     { key: 'mqtt_password', value: String(settings.value.mqtt_password || ''), updated_at: new Date().toISOString() },
     { key: 'mqtt_enabled', value: 'true', updated_at: new Date().toISOString() }
   ], { onConflict: 'key' })
+
+  if (upsertErr) {
+    console.error('Failed to start bridge:', upsertErr)
+    showToast(`Gagal menyalakan bridge: ${upsertErr.message}`, 'error')
+    return
+  }
   showToast('Bridge dinyalakan — menunggu koneksi...', 'info')
   
   // Timeout 12 detik. Bridge jalan per 5 detik, jadi butuh waktu agak lama buat sadar & connect.
@@ -1464,10 +1469,16 @@ function stopMqttBridge() {
     confirmText: 'Matikan Bridge',
     danger: true,
     onConfirm: async () => {
-      await supabase.from('settings').upsert([
+      const { error: upsertErr } = await supabase.from('settings').upsert([
         { key: 'mqtt_enabled', value: 'false', updated_at: new Date().toISOString() }
       ], { onConflict: 'key' })
-      showToast('Bridge dimatikan', 'info')
+      
+      if (upsertErr) {
+        console.error('Failed to stop bridge:', upsertErr)
+        showToast(`Gagal mematikan bridge: ${upsertErr.message}`, 'error')
+      } else {
+        showToast('Bridge dimatikan', 'info')
+      }
     }
   })
 }
@@ -1482,7 +1493,7 @@ async function fetchMqttLogs() {
     mqttLogs.value = data.map(l => ({
       type: l.type,
       message: l.message,
-      time: new Date(l.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      time: formatTimeWithSeconds(l.created_at)
     }))
   }
 }
@@ -1527,14 +1538,14 @@ function subscribeMqttStatus() {
       mqttLogs.value.unshift({
         type: row.type,
         message: row.message,
-        time: new Date(row.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        time: formatTimeWithSeconds(row.created_at)
       })
       if (mqttLogs.value.length > 100) mqttLogs.value.pop()
     })
     .subscribe()
 }
 
-// Polling fallback - jalan tiap 3 detik, antisipasi realtime settings ga aktif
+// Polling fallback - jalan tiap 30 detik, antisipasi realtime channel drop tanpa event
 async function pollMqttState() {
   const { data } = await supabase
     .from('settings')
@@ -1559,9 +1570,6 @@ async function pollMqttState() {
       mqttUptime.value = 0
     }
   }
-
-  // Fetch log baru kalau ada yang masuk
-  await fetchMqttLogs()
 }
 
 // ===== DANGER ZONE & CONFIRM MODAL =====
@@ -1589,6 +1597,21 @@ function showConfirm(options) {
     isAlert: options.isAlert || false,
     onConfirm: options.onConfirm || null
   }
+}
+
+const INFRASTRUCTURE_TABLES = ['parking_slots', 'areas', 'exit_gates', 'gate_accounts']
+
+async function deleteAllInfrastructure() {
+  for (const table of INFRASTRUCTURE_TABLES) {
+    const { error } = await supabase.from(table).delete().not('id', 'is', null)
+    if (error) throw error
+  }
+}
+
+async function resetSettingsToDefault() {
+  const payload = DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() }))
+  const { error } = await supabase.from('settings').upsert(payload, { onConflict: 'key' })
+  if (error) throw error
 }
 
 function closeConfirm() {
@@ -1624,7 +1647,7 @@ function resetParkir() {
         showToast('✅ Semua parkir aktif telah direset', 'success')
         fetchTickets()
       } catch (err) {
-        showToast('❌ Gagal: ' + err.message, 'error')
+        showToast('❌ Gagal: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1659,7 +1682,7 @@ function hapusParkir() {
         showToast('✅ Seluruh data & foto parkir telah DIBERSIHKAN!', 'success')
         fetchTickets()
       } catch (err) {
-        showToast('❌ Gagal hapus parkir: ' + err.message, 'error')
+        showToast('❌ Gagal hapus parkir: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1684,7 +1707,7 @@ function resetSlots() {
         showToast('✅ Semua slot telah direset ke available', 'success')
         fetchSlots()
       } catch (err) {
-        showToast('❌ Gagal: ' + err.message, 'error')
+        showToast('❌ Gagal: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1709,7 +1732,7 @@ function unlockAllSlots() {
         showToast('✅ Semua lock berhasil dilepas', 'success')
         fetchSlots()
       } catch (err) {
-        showToast('❌ Gagal unlock: ' + err.message, 'error')
+        showToast('❌ Gagal unlock: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1727,17 +1750,7 @@ function hapusInfrastruktur() {
     onConfirm: async () => {
       dangerLoading.value = true
       try {
-        const { error: slotErr } = await supabase.from('parking_slots').delete().not('id', 'is', null)
-        if (slotErr) throw slotErr
-        
-        const { error: areaErr } = await supabase.from('areas').delete().not('id', 'is', null)
-        if (areaErr) throw areaErr
-
-        const { error: gateErr } = await supabase.from('exit_gates').delete().not('id', 'is', null)
-        if (gateErr) throw gateErr
-
-        const { error: accErr } = await supabase.from('gate_accounts').delete().not('id', 'is', null)
-        if (accErr) throw accErr
+        await deleteAllInfrastructure()
 
         showToast('✅ Semua Area, Slot, dan Gate telah DIBERSIHKAN!', 'success')
         fetchSlots()
@@ -1745,7 +1758,7 @@ function hapusInfrastruktur() {
         fetchGates()
         fetchGateAccounts()
       } catch (err) {
-        showToast('❌ Gagal hapus infrastruktur: ' + err.message, 'error')
+        showToast('❌ Gagal hapus infrastruktur: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1762,14 +1775,12 @@ function resetSettings() {
     onConfirm: async () => {
       dangerLoading.value = true
       try {
-        const { error } = await supabase.from('settings')
-          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
-        if (error) throw error
-        
+        await resetSettingsToDefault()
+
         showToast('✅ Settings direset ke default', 'success')
         await fetchSettings()
       } catch (err) {
-        showToast('❌ Gagal: ' + err.message, 'error')
+        showToast('❌ Gagal: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1800,17 +1811,15 @@ function resetSemua() {
           .update({ status: 'tersedia', locked_by: null, updated_at: new Date().toISOString() })
           .not('id', 'is', null)
         if (slotErr) throw slotErr
-        // Reset settings
-        const { error: setErr } = await supabase.from('settings')
-          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
-        if (setErr) throw setErr
-        
+
+        await resetSettingsToDefault()
+
         showToast('✅ Reset semua selesai!', 'success')
         fetchTickets()
         fetchSlots()
         await fetchSettings()
       } catch (err) {
-        showToast('❌ Gagal reset semua: ' + err.message, 'error')
+        showToast('❌ Gagal reset semua: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1835,28 +1844,16 @@ function hapusSemua() {
             await supabase.storage.from('vehicle-images').remove(fileNames)
           }
         }
-        
+
         // Hapus tiket dan session
         const { error: tErr } = await supabase.from('tickets').delete().not('id', 'is', null)
         if (tErr) throw tErr
         const { error: sErr } = await supabase.from('sessions').delete().not('id', 'is', null)
         if (sErr) throw sErr
 
-        // Hapus infrastruktur (slot, area, gate, gate accounts)
-        const { error: slotErr } = await supabase.from('parking_slots').delete().not('id', 'is', null)
-        if (slotErr) throw slotErr
-        const { error: areaErr } = await supabase.from('areas').delete().not('id', 'is', null)
-        if (areaErr) throw areaErr
-        const { error: gateErr } = await supabase.from('exit_gates').delete().not('id', 'is', null)
-        if (gateErr) throw gateErr
-        const { error: accErr } = await supabase.from('gate_accounts').delete().not('id', 'is', null)
-        if (accErr) throw accErr
-        
-        // Reset settings
-        const { error: setErr } = await supabase.from('settings')
-          .upsert(DEFAULT_SETTINGS.map(d => ({ ...d, updated_at: new Date().toISOString() })), { onConflict: 'key' })
-        if (setErr) throw setErr
-        
+        await deleteAllInfrastructure()
+        await resetSettingsToDefault()
+
         showToast('✅ Pembersihan total berhasil dieksekusi!', 'success')
         fetchTickets()
         fetchSlots()
@@ -1865,7 +1862,7 @@ function hapusSemua() {
         fetchGateAccounts()
         await fetchSettings()
       } catch (err) {
-        showToast('❌ Gagal hapus semua: ' + err.message, 'error')
+        showToast('❌ Gagal hapus semua: ' + friendlyError(err), 'error')
       } finally {
         dangerLoading.value = false
       }
@@ -1938,35 +1935,6 @@ function getSlotsByArea(areaId) {
 
 function getAreaSlotCount(areaId) {
   return getSlotsByArea(areaId).length
-}
-
-async function updateAreaMqttPrefix(area, prefix) {
-  try {
-    const { error } = await supabase
-      .from('parking_areas')
-      .update({ mqtt_prefix: prefix, updated_at: new Date().toISOString() })
-      .eq('id', area.id)
-
-    if (error) throw error
-
-    area.mqtt_prefix = prefix
-
-    // Auto-update mqtt_topic semua slot di area ini
-    const areaSlots = getSlotsByArea(area.id)
-    for (const slot of areaSlots) {
-      const newTopic = prefix ? `${prefix}${slot.name}` : ''
-      await supabase
-        .from('parking_slots')
-        .update({ mqtt_topic: newTopic, updated_at: new Date().toISOString() })
-        .eq('id', slot.id)
-      slot.mqtt_topic = newTopic
-    }
-
-    showToast(`✅ Prefix MQTT area "${area.name}" disimpan`, 'success')
-  } catch (err) {
-    console.error('Update area mqtt prefix error:', err)
-    showToast('❌ Gagal menyimpan prefix MQTT', 'error')
-  }
 }
 
 // Area Management
@@ -2042,7 +2010,7 @@ async function saveArea() {
     fetchSlots()
   } catch (err) {
     console.error('Save area error:', err)
-    showToast('❌ Gagal menyimpan area: ' + err.message, 'error')
+    showToast('❌ Gagal menyimpan area: ' + friendlyError(err), 'error')
   }
 }
 
@@ -2064,7 +2032,7 @@ function deleteArea(area) {
         fetchSlots()
       } catch (err) {
         console.error('Delete area error:', err)
-        showToast('❌ Gagal menghapus area: ' + err.message, 'error')
+        showToast('❌ Gagal menghapus area: ' + friendlyError(err), 'error')
       }
     }
   })
@@ -2113,6 +2081,7 @@ async function saveSlot() {
       mqtt_topic: mqttTopic,
       updated_at: new Date().toISOString()
     }
+    if (slotForm.value.status === 'tersedia') payload.locked_by = null
 
     if (editingSlot.value) {
       const { error } = await supabase
@@ -2138,7 +2107,7 @@ async function saveSlot() {
     calculateStats()
   } catch (err) {
     console.error('Save slot error:', err)
-    showToast('❌ Gagal menyimpan slot: ' + err.message, 'error')
+    showToast('❌ Gagal menyimpan slot: ' + friendlyError(err), 'error')
   }
 }
 
@@ -2164,7 +2133,7 @@ async function deleteSlot() {
         fetchSlots()
         calculateStats()
       } catch (err) {
-        showToast('❌ Gagal hapus slot: ' + err.message, 'error')
+        showToast('❌ Gagal hapus slot: ' + friendlyError(err), 'error')
       }
     }
   })
@@ -2173,18 +2142,23 @@ async function deleteSlot() {
 // Debug mode: toggle slot status manual
 async function debugToggleSlot(slot) {
   if (!debugMode.value) return
-  
+
   const newStatus = slot.status === 'tersedia' ? 'diambil' : 'tersedia'
-  
+
   try {
+    const patch = newStatus === 'tersedia'
+      ? { status: newStatus, locked_by: null, updated_at: new Date().toISOString() }
+      : { status: newStatus, updated_at: new Date().toISOString() }
+
     const { error } = await supabase
       .from('parking_slots')
-      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .update(patch)
       .eq('id', slot.id)
 
     if (error) throw error
-    
+
     slot.status = newStatus
+    if (newStatus === 'tersedia') slot.locked_by = null
     calculateStats()
     showToast(`🐛 Slot ${slot.name} → ${newStatus}`, 'info')
   } catch (err) {
@@ -2252,7 +2226,11 @@ async function fetchGates() {
 }
 
 async function fetchGateAccounts() {
-  const { data } = await supabase.from('gate_accounts').select('*').order('username')
+  // Explicit column list; never fetch password_hash to the client.
+  const { data } = await supabase
+    .from('gate_accounts')
+    .select('id, username, current_gate, is_online, last_active, created_at')
+    .order('username')
   gateAccounts.value = data || []
 }
 
@@ -2289,7 +2267,7 @@ async function saveGate() {
     showToast('Gate berhasil disimpan', 'success')
     fetchGates()
   } catch (err) {
-    showToast('Gagal: ' + err.message, 'error')
+    showToast('Gagal: ' + friendlyError(err), 'error')
   }
 }
 
@@ -2301,7 +2279,7 @@ function deleteGate(gate) {
     danger: true,
     onConfirm: async () => {
       const { error } = await supabase.from('exit_gates').delete().eq('id', gate.id)
-      if (error) { showToast('❌ Gagal hapus gate: ' + error.message, 'error'); return }
+      if (error) { showToast('❌ Gagal hapus gate: ' + friendlyError(error), 'error'); return }
       fetchGates()
       showToast('✅ Gate dihapus', 'success')
     }
@@ -2324,7 +2302,7 @@ async function saveGateAccount() {
     showToast('Akun berhasil dibuat', 'success')
     fetchGateAccounts()
   } catch (err) {
-    showToast('Gagal: ' + err.message, 'error')
+    showToast('Gagal: ' + friendlyError(err), 'error')
   }
 }
 
@@ -2336,7 +2314,7 @@ function deleteGateAccount(acc) {
     danger: true,
     onConfirm: async () => {
       const { error } = await supabase.from('gate_accounts').delete().eq('id', acc.id)
-      if (error) { showToast('❌ Gagal hapus akun: ' + error.message, 'error'); return }
+      if (error) { showToast('❌ Gagal hapus akun: ' + friendlyError(error), 'error'); return }
       fetchGateAccounts()
       showToast('✅ Akun dihapus', 'success')
     }
@@ -2371,8 +2349,8 @@ onMounted(async () => {
   }
   await fetchMqttLogs()
 
-  // Real-time polling MQTT state
-  mqttPollInterval = setInterval(pollMqttState, 500)
+  // Safety-net poll in case the realtime channel drops silently.
+  mqttPollInterval = setInterval(pollMqttState, 30000)
 })
 
 onUnmounted(() => {

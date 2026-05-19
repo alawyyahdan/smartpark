@@ -30,8 +30,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
 import { computeSlotCorners, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
+import { createLeafletMap } from '../composables/useLeafletMap.js'
 
 const props = defineProps({
   lat: { type: [Number, String], default: null },
@@ -50,7 +50,7 @@ const mapRef = ref(null)
 let map = null
 let slotRect = null
 let slotMarker = null
-let resizeObserver = null
+let mapHandle = null
 
 const DEFAULT_CENTER = [props.defaultLat, props.defaultLng]
 
@@ -59,21 +59,8 @@ onMounted(() => {
     ? [parseFloat(props.lat), parseFloat(props.lng)] 
     : DEFAULT_CENTER
 
-  map = L.map(mapRef.value, {
-    center,
-    zoom: 19,
-    zoomControl: true
-  })
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 22
-  }).addTo(map)
-
-  resizeObserver = new ResizeObserver(() => {
-    if (map) map.invalidateSize()
-  })
-  resizeObserver.observe(mapRef.value)
-  setTimeout(() => { if (map) map.invalidateSize() }, 300)
+  mapHandle = createLeafletMap(mapRef.value, { center, zoom: 19 })
+  map = mapHandle.map
 
   // Draw existing slots
   props.existingSlots.forEach(s => {
@@ -100,8 +87,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (resizeObserver) resizeObserver.disconnect()
-  if (map) map.remove()
+  if (mapHandle) mapHandle.destroy()
 })
 
 function drawCurrentSlot() {

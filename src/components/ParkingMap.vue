@@ -43,13 +43,12 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
 import { computeSlotCorners, calcHeading, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
+import { createLeafletMap } from '../composables/useLeafletMap.js'
 
 const props = defineProps({
   userLat: { type: Number, default: DEFAULT_LAT },
   userLng: { type: Number, default: DEFAULT_LNG },
-  userHeading: { type: Number, default: 0 },
   targetSlot: { type: Object, default: null },
   slots: { type: Array, default: () => [] },
   lineColor: { type: String, default: '#4285F4' },
@@ -81,33 +80,22 @@ let prevLng = null
 const STEP = 0.00008
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving'
 
-let resizeObserver = null
+let mapHandle = null
 
 onMounted(() => initMap())
 onUnmounted(() => {
   stopMove()
-  if (resizeObserver) resizeObserver.disconnect()
-  if (map) map.remove()
+  if (mapHandle) mapHandle.destroy()
 })
 
 function initMap() {
-  map = L.map(mapRef.value, {
+  mapHandle = createLeafletMap(mapRef.value, {
     center: [props.userLat, props.userLng],
     zoom: 18,
     zoomControl: false,
     attributionControl: false
   })
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 22
-  }).addTo(map)
-
-  // Fix map setengah abu-abu
-  resizeObserver = new ResizeObserver(() => {
-    if (map) map.invalidateSize()
-  })
-  resizeObserver.observe(mapRef.value)
-  setTimeout(() => { if (map) map.invalidateSize() }, 300)
+  map = mapHandle.map
 
   // User accuracy circle
   userCircle = L.circle([props.userLat, props.userLng], {

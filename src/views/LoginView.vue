@@ -56,6 +56,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { supabase } from '../lib/supabase.js'
+import { friendlyError } from '../lib/errorMessages.js'
+import { applyFavicon, applyTitle } from '../lib/branding.js'
 
 const router = useRouter()
 
@@ -71,13 +73,9 @@ onMounted(async () => {
     data.forEach(s => {
       if (s.key === 'app_name' && s.value) {
         appName.value = s.value
-        document.title = s.value + ' — Login Admin'
+        applyTitle(s.value, '— Login Admin')
       }
-      if (s.key === 'app_favicon' && s.value) {
-        let link = document.querySelector("link[rel~='icon']")
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-        link.href = s.value
-      }
+      if (s.key === 'app_favicon' && s.value) applyFavicon(s.value)
     })
   }
 })
@@ -98,7 +96,7 @@ async function handleLogin() {
     const adminPath = import.meta.env.VITE_ADMIN_PATH || '/admin'
     router.push(adminPath)
   } catch (err) {
-    error.value = err.message || 'Login gagal. Periksa email dan password Anda.'
+    error.value = friendlyError(err) || 'Login gagal. Periksa email dan password Anda.'
   } finally {
     loading.value = false
   }

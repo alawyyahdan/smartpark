@@ -143,6 +143,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase } from '../lib/supabase.js'
 import { generateTicketCode, generateQRDataUrl, printThermalPDF } from '../lib/ticketGenerator.js'
+import { formatTimeWithSeconds, formatDateLong } from '../lib/formatters.js'
+import { debug } from '../lib/debug.js'
+import { applyFavicon, applyTitle } from '../lib/branding.js'
 import CameraCapture from '../components/CameraCapture.vue'
 
 // Clock
@@ -170,8 +173,8 @@ async function checkDebugMode() {
   }
 }
 
-const clock = computed(() => now.value.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
-const dateStr = computed(() => now.value.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))
+const clock = computed(() => formatTimeWithSeconds(now.value))
+const dateStr = computed(() => formatDateLong(now.value))
 
 const greeting = computed(() => {
   const h = now.value.getHours()
@@ -190,7 +193,10 @@ const greetingIcon = computed(() => {
 })
 
 // App settings from DB
-const appUrl = ref(import.meta.env.VITE_APP_URL || 'http://localhost:5173')
+// QR-code URL fallback chain: VITE_APP_URL env -> settings.app_url -> window.location.origin.
+// Using window.location.origin as last resort prevents accidentally embedding 'localhost:5173'
+// links in production tickets when the operator forgot to configure VITE_APP_URL or app_url.
+const appUrl = ref(import.meta.env.VITE_APP_URL || window.location.origin)
 const ticketPrefix = ref('SP')
 const appName = ref('SmartPark')
 
@@ -212,17 +218,24 @@ let countdownInterval = null
 
 async function fetchSlots() {
   try {
-    const { data, error } = await supabase.from('parking_slots').select('status')
-    
+    // Capacity = slot row state. terisi = status='diambil' OR locked_by NOT NULL.
+    // Mirrors RPC issue_ticket so UI and server agree.
+    const { data, error } = await supabase
+      .from('parking_slots')
+      .select('status, locked_by')
+
     if (error) {
       console.error('Fetch slots error:', error)
       return
     }
-    
-    // Update stats (kalau data kosong, jadi 0 semua)
-    slots.value.total = data?.length || 0
-    slots.value.available = data?.filter(s => s.status === 'tersedia').length || 0
-    slots.value.occupied = data?.filter(s => s.status === 'diambil').length || 0
+
+    const total = data?.length || 0
+    const occupied = data?.filter(s => s.status === 'diambil' || s.locked_by).length || 0
+    const available = total - occupied
+
+    slots.value.total = total
+    slots.value.available = available
+    slots.value.occupied = occupied
   } catch (err) {
     console.error('Fetch slots error:', err)
   }
@@ -231,8 +244,16 @@ async function fetchSlots() {
 async function generateTicket() {
   error.value = ''
   loading.value = true
-  
+
   try {
+    // Fast UX pre-check (canonical capacity check is in RPC issue_ticket).
+    await fetchSlots()
+    if (slots.value.available === 0) {
+      error.value = 'Parkir penuh. Tidak ada slot tersedia.'
+      loading.value = false
+      return
+    }
+
     // 1. Capture vehicle image
     let vehicleImageUrl = null
     if (cameraRef.value) {
@@ -240,7 +261,7 @@ async function generateTicket() {
       if (captured && captured.blob) {
         // Upload to Supabase Storage
         const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`
-        console.log('[Ticket] Uploading vehicle image:', fileName, 'size:', captured.blob.size)
+        debug('Ticket', 'Uploading vehicle image:', fileName, 'size:', captured.blob.size)
         const { data: uploadData, error: uploadError } = await supabase.storage
           .from('vehicle-images')
           .upload(fileName, captured.blob, {
@@ -256,7 +277,7 @@ async function generateTicket() {
             .from('vehicle-images')
             .getPublicUrl(fileName)
           vehicleImageUrl = urlData.publicUrl
-          console.log('[Ticket] Vehicle image URL:', vehicleImageUrl)
+          debug('Ticket', 'Vehicle image URL:', vehicleImageUrl)
         }
       } else {
         console.warn('[Ticket] Camera capture returned empty:', captured)
@@ -271,17 +292,26 @@ async function generateTicket() {
     const seq = (count || 0) + 1
     const ticketCode = generateTicketCode(seq, ticketPrefix.value)
 
-    // 3. Create ticket record
-    const { data, error: err } = await supabase
-      .from('tickets')
-      .insert([{ 
-        ticket_code: ticketCode, 
-        qr_data: '', 
-        status: 'active',
-        vehicle_image: vehicleImageUrl 
-      }])
-      .select().single()
-    if (err) throw err
+    // 3. Create ticket record (atomic: capacity check + insert under DB lock)
+    const { data: rpcRows, error: err } = await supabase.rpc('issue_ticket', {
+      p_ticket_code: ticketCode,
+      p_qr_data: '',
+      p_vehicle_image: vehicleImageUrl
+    })
+    if (err) {
+      if (err.message?.includes('PARKING_FULL')) {
+        error.value = 'Parkir penuh. Tidak ada slot tersedia.'
+        await fetchSlots()
+        return
+      }
+      if (err.message?.includes('NO_SLOTS_CONFIGURED')) {
+        error.value = 'Belum ada slot parkir yang dikonfigurasi.'
+        return
+      }
+      throw err
+    }
+    const data = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows
+    if (!data) throw new Error('Server tidak mengembalikan data tiket.')
 
     // 4. Update with QR data
     const qrData = `${appUrl.value}/visitor?t=${data.id}`
@@ -317,7 +347,7 @@ function setupRealtimeListener(ticketId) {
   // Subscribe to ticket_accessed event
   realtimeChannel = supabase.channel(`ticket-${ticketId}`)
     .on('broadcast', { event: 'ticket_accessed' }, (payload) => {
-      console.log('Ticket accessed by visitor:', payload)
+      debug('Ticket', 'Accessed by visitor:', payload)
       // Auto close QR screen
       resetScreen()
     })
@@ -356,15 +386,29 @@ async function fetchAppSettings() {
       if (s.key === 'ticket_prefix' && s.value) ticketPrefix.value = s.value
       if (s.key === 'app_name' && s.value) {
         appName.value = s.value
-        document.title = s.value + ' — Gate Operator'
+        applyTitle(s.value, '— Gate Operator')
       }
-      if (s.key === 'app_favicon' && s.value) {
-        let link = document.querySelector("link[rel~='icon']")
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-        link.href = s.value
-      }
+      if (s.key === 'app_favicon' && s.value) applyFavicon(s.value)
     })
   }
+}
+
+// Coalesce bursts of realtime events into one fetch.
+let slotRefreshTimer = null
+function scheduleSlotRefresh() {
+  if (slotRefreshTimer) return
+  slotRefreshTimer = setTimeout(() => {
+    slotRefreshTimer = null
+    fetchSlots()
+  }, 150)
+}
+
+let slotChannel = null
+function subscribeSlotUpdates() {
+  slotChannel = supabase
+    .channel('ticket-view-slots')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'parking_slots' }, scheduleSlotRefresh)
+    .subscribe()
 }
 
 onMounted(async () => {
@@ -372,7 +416,9 @@ onMounted(async () => {
   checkDebugMode()
   await fetchAppSettings()
   fetchSlots()
-  slotPollInterval = setInterval(fetchSlots, 10000)
+  subscribeSlotUpdates()
+  // Safety-net poll in case the realtime channel drops silently.
+  slotPollInterval = setInterval(fetchSlots, 30000)
 })
 
 let slotPollInterval = null
@@ -381,7 +427,9 @@ onUnmounted(() => {
   clearInterval(clockInterval)
   clearInterval(countdownInterval)
   if (slotPollInterval) clearInterval(slotPollInterval)
-  
+  if (slotRefreshTimer) clearTimeout(slotRefreshTimer)
+  if (slotChannel) supabase.removeChannel(slotChannel)
+
   // Cleanup realtime
   if (realtimeChannel) {
     supabase.removeChannel(realtimeChannel)

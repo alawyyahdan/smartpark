@@ -2,8 +2,8 @@
  * Shared geo utilities for parking slot geometry and heading calculation
  */
 
-// 1 meter ≈ 0.000009 degrees latitude
-export const METER_TO_DEG = 0.000009
+// 1 meter ≈ 0.000009 degrees latitude (private to this module)
+const METER_TO_DEG = 0.000009
 
 export const DEFAULT_LAT = -7.2650876
 export const DEFAULT_LNG = 112.783217

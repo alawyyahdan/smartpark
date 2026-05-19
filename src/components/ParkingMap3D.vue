@@ -84,7 +84,6 @@ const MAX_SPEED = 0.00003  // max speed per frame
 const ACCELERATION = 0.000002  // speed increase per frame
 const DECELERATION = 0.6  // friction multiplier
 const TURN_SPEED = 3  // degrees per frame
-const FRAME_RATE = 30  // ms per frame
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving'
 
 onMounted(() => initMap())

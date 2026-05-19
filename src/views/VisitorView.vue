@@ -94,7 +94,7 @@
         </div>
         <div class="v-done-row" v-if="session?.cost_rupiah">
           <span>Biaya</span>
-          <span>{{ formatRupiah(session.cost_rupiah) }}</span>
+          <span>{{ formatCurrency(session.cost_rupiah) }}</span>
         </div>
       </div>
     </div>
@@ -467,7 +467,12 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import QRCode from 'qrcode'
 import { supabase } from '../lib/supabase.js'
+import { formatTime, formatCurrency } from '../lib/formatters.js'
+import { DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
+import { debug } from '../lib/debug.js'
+import { applyFavicon, applyTitle } from '../lib/branding.js'
 import ParkingMap from '../components/ParkingMap.vue'
 import ParkingMap3D from '../components/ParkingMap3D.vue'
 
@@ -545,6 +550,7 @@ const differentSlotInput = ref('')
 const showDifferentSlotInput = ref(false)
 const showDifferentSlotButton = ref(false) // tombol di bawah map
 let differentSlotTimer = null
+const IDLE_COUNTDOWN_SECONDS = 60
 const idleCountdown = ref(0)
 let idleTimer = null
 let idleCountdownTimer = null
@@ -588,15 +594,6 @@ const ticketStatusClass = computed(() => {
   return map[ticket.value.status] || ''
 })
 
-function formatTime(isoStr) {
-  if (!isoStr) return '—'
-  return new Date(isoStr).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatRupiah(amount) {
-  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount)
-}
-
 function startTimer(entryIso) {
   if (timerInterval) clearInterval(timerInterval)
   const entryMs = new Date(entryIso).getTime()
@@ -623,8 +620,8 @@ function requestGps() {
         .select('key, value')
         .in('key', ['default_lat', 'default_lng'])
 
-      let defLat = -7.2650876
-      let defLng = 112.783217
+      let defLat = DEFAULT_LAT
+      let defLng = DEFAULT_LNG
       if (coordSettings) {
         coordSettings.forEach(s => {
           if (s.key === 'default_lat' && s.value) defLat = parseFloat(s.value)
@@ -751,7 +748,7 @@ async function loadTicket() {
         existingDebug.exited_at = null
       }
       debugTicket = existingDebug
-      console.log('[DEBUG] Reusing ticket:', debugTicket.id)
+      debug('DEBUG', 'Reusing ticket:', debugTicket.id)
     } else {
       // Bikin 1x aja
       const { data: newTicket, error: debugErr } = await supabase
@@ -766,28 +763,28 @@ async function loadTicket() {
         return
       }
       debugTicket = newTicket
-      console.log('[DEBUG] Ticket created:', debugTicket.id)
+      debug('DEBUG', 'Ticket created:', debugTicket.id)
     }
 
     ticket.value = debugTicket
     
     // Fetch slots, settings, GPS
     await fetchAllSlots()
-    console.log('[DEBUG] allSlots fetched:', allSlots.value.length)
+    debug('DEBUG', 'allSlots fetched:', allSlots.value.length)
     startGpsTracking()
 
     // Lock slot terdekat
     await lockNearestSlot(debugTicket.id)
-    console.log('[DEBUG] After lockNearestSlot, lockedSlot:', lockedSlot.value?.name || 'NULL')
+    debug('DEBUG', 'After lockNearestSlot, lockedSlot:', lockedSlot.value?.name || 'NULL')
 
     state.value = 'valid'
     startTimer(debugTicket.created_at)
     watchTicketStatus()
     if (lockedSlot.value) {
-      console.log('[DEBUG] Starting watchLockedSlot for:', lockedSlot.value.id, lockedSlot.value.name)
+      debug('DEBUG', 'Starting watchLockedSlot for:', lockedSlot.value.id, lockedSlot.value.name)
       watchLockedSlot()
     } else {
-      console.log('[DEBUG] No lockedSlot, watchLockedSlot NOT started')
+      debug('DEBUG', 'No lockedSlot, watchLockedSlot NOT started')
     }
     return
   }
@@ -851,7 +848,7 @@ async function loadTicket() {
         exitMode.value = true
         
         // Generate QR barcode untuk keluar
-        const QRCode = (await import('qrcode')).default
+        
         qrExitUrl.value = await QRCode.toDataURL(data.ticket_code, {
           width: 200,
           margin: 2,
@@ -923,7 +920,7 @@ async function fetchMapSettings() {
             if (userLat.value === 0) userLat.value = v
             fakeGps.value.lat = v
           } else {
-            fakeGps.value.lat = -7.2650876
+            fakeGps.value.lat = DEFAULT_LAT
           }
         }
         if (s.key === 'default_lng') {
@@ -932,18 +929,14 @@ async function fetchMapSettings() {
             if (userLng.value === 0) userLng.value = v
             fakeGps.value.lng = v
           } else {
-            fakeGps.value.lng = 112.783217
+            fakeGps.value.lng = DEFAULT_LNG
           }
         }
         if (s.key === 'app_name') {
           appName.value = s.value || 'SmartPark'
-          document.title = appName.value + ' — Panduan Parkir'
+          applyTitle(appName.value, '— Panduan Parkir')
         }
-        if (s.key === 'app_favicon' && s.value) {
-          let link = document.querySelector("link[rel~='icon']")
-          if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-          link.href = s.value
-        }
+        if (s.key === 'app_favicon' && s.value) applyFavicon(s.value)
       })
     }
   } catch (err) {
@@ -999,18 +992,13 @@ function getDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
 }
 
-function getUserPosition() {
-  // GPS udah didapet dari gate, pake userLat/userLng yang udah di-set
-  return { lat: userLat.value, lng: userLng.value }
-}
-
 async function lockNearestSlot(ticketId) {
   try {
-    console.log('[LOCK] Start lockNearestSlot, ticketId:', ticketId)
+    debug('LOCK', 'Start lockNearestSlot, ticketId:', ticketId)
     
     // 0. Kalau tiket udah parked/exiting, ga perlu lock
     if (ticket.value && (ticket.value.status === 'parked' || ticket.value.status === 'exiting')) {
-      console.log('[LOCK] Skip: ticket status is', ticket.value.status)
+      debug('LOCK', 'Skip: ticket status is', ticket.value.status)
       return
     }
 
@@ -1020,14 +1008,14 @@ async function lockNearestSlot(ticketId) {
       .select('*')
       .eq('locked_by', ticketId)
 
-    console.log('[LOCK] Step 1 - myLocks:', myLocks?.length, 'error:', lockErr?.message)
+    debug('LOCK', 'Step 1 - myLocks:', myLocks?.length, 'error:', lockErr?.message)
 
     if (myLocks && myLocks.length > 0) {
       lockedSlot.value = myLocks[0]
-      console.log('[LOCK] Already locked:', myLocks[0].name, 'status:', myLocks[0].status)
+      debug('LOCK', 'Already locked:', myLocks[0].name, 'status:', myLocks[0].status)
       // Kalau slot udah occupied tapi masih locked_by kita, langsung auto-park
       if (myLocks[0].status === 'diambil') {
-        console.log('[LOCK] Slot already occupied! Auto-parking.')
+        debug('LOCK', 'Slot already occupied! Auto-parking.')
         handleOccupiedYes()
       } else {
         // Start watching + idle timer (includes different slot button)
@@ -1042,10 +1030,10 @@ async function lockNearestSlot(ticketId) {
       .from('parking_slots')
       .select('*')
 
-    console.log('[LOCK] Step 2 - allSlots:', allSlots?.length, 'error:', allErr?.message)
+    debug('LOCK', 'Step 2 - allSlots:', allSlots?.length, 'error:', allErr?.message)
 
     if (!allSlots || allSlots.length === 0) {
-      console.log('[LOCK] No slots in DB!')
+      debug('LOCK', 'No slots in DB!')
       return
     }
 
@@ -1070,11 +1058,11 @@ async function lockNearestSlot(ticketId) {
     // 3. Ambil slot available yang ga di-lock
     const freeSlots = allSlots.filter(s => s.status === 'tersedia' && !s.locked_by)
 
-    console.log('[LOCK] Step 3 - freeSlots:', freeSlots.length, 'of', allSlots.length, 'total')
-    console.log('[LOCK] All slot statuses:', allSlots.map(s => `${s.name}:${s.status}:${s.locked_by || 'null'}`))
+    debug('LOCK', 'Step 3 - freeSlots:', freeSlots.length, 'of', allSlots.length, 'total')
+    debug('LOCK', 'All slot statuses:', allSlots.map(s => `${s.name}:${s.status}:${s.locked_by || 'null'}`))
 
     if (freeSlots.length === 0) {
-      console.log('[LOCK] No free slots!')
+      debug('LOCK', 'No free slots!')
       return
     }
 
@@ -1098,7 +1086,7 @@ async function lockNearestSlot(ticketId) {
 
     lockedSlot.value = bestSlot
     lockedSlot.value.updated_at = new Date().toISOString() // set lock time
-    console.log('[LOCK] Slot locked:', bestSlot.id, bestSlot.name)
+    debug('LOCK', 'Slot locked:', bestSlot.id, bestSlot.name)
     
     // Start watching + idle timer (includes different slot button at 50%)
     watchLockedSlot()
@@ -1124,7 +1112,7 @@ function startIdleTimer() {
   const remainingMs = totalMs - elapsed
   const halfMs = (totalMs / 2) - elapsed // 50% untuk tombol "slot berbeda"
   
-  console.log('[IDLE] Timer started. idle_timeout:', idleTimeout.value, 'menit. Elapsed:', Math.round(elapsed/1000), 's. Remaining:', Math.round(remainingMs/1000), 's')
+  debug('IDLE', 'Timer started. idle_timeout:', idleTimeout.value, 'menit. Elapsed:', Math.round(elapsed/1000), 's. Remaining:', Math.round(remainingMs/1000), 's')
 
   // Tombol "parkir di slot berbeda" muncul di 50% waktu
   showDifferentSlotButton.value = halfMs <= 0
@@ -1132,7 +1120,7 @@ function startIdleTimer() {
     if (differentSlotTimer) clearTimeout(differentSlotTimer)
     differentSlotTimer = setTimeout(() => {
       showDifferentSlotButton.value = true
-      console.log('[IDLE] Different slot button shown')
+      debug('IDLE', 'Different slot button shown')
     }, halfMs)
   }
 
@@ -1140,7 +1128,7 @@ function startIdleTimer() {
   if (remainingMs <= 0) {
     if (ticket.value?.status === 'active') {
       showIdlePopup.value = true
-      idleCountdown.value = 60
+      idleCountdown.value = IDLE_COUNTDOWN_SECONDS
       idleCountdownTimer = setInterval(() => {
         idleCountdown.value--
         if (idleCountdown.value <= 0) handleIdleNo()
@@ -1150,9 +1138,9 @@ function startIdleTimer() {
     idleTimer = setTimeout(() => {
       // Guard: cek status masih active
       if (ticket.value?.status !== 'active') return
-      console.log('[IDLE] Timer fired! Showing popup')
+      debug('IDLE', 'Timer fired! Showing popup')
       showIdlePopup.value = true
-      idleCountdown.value = 60
+      idleCountdown.value = IDLE_COUNTDOWN_SECONDS
       idleCountdownTimer = setInterval(() => {
         idleCountdown.value--
         if (idleCountdown.value <= 0) handleIdleNo()
@@ -1257,7 +1245,7 @@ async function enterExitMode(skipDbUpdate = false) {
 
   // Generate QR barcode untuk keluar
   if (ticket.value) {
-    const QRCode = (await import('qrcode')).default
+    
     qrExitUrl.value = await QRCode.toDataURL(ticket.value.ticket_code, {
       width: 200,
       margin: 2,
@@ -1270,7 +1258,7 @@ async function enterExitMode(skipDbUpdate = false) {
 
 async function reroute(ticketId) {
   isRerouting.value = true
-  console.log('🔄 Rerouting: locked slot is occupied, finding new slot...')
+  debug('REROUTE', '🔄 Locked slot is occupied, finding new slot...')
 
   try {
     // 1. Unlock slot lama
@@ -1322,14 +1310,14 @@ function watchLockedSlot() {
       
       // LOGIC PENCEGAHAN: Cek kepemilikan lock
       if (locked_by !== ticket.value.id) {
-        console.log('[STOLEN] Lock changed or taken by someone else')
+        debug('STOLEN', 'Lock changed or taken by someone else')
         handleStolen()
         return
       }
 
       // Lock masih milik saya, tapi terdeteksi terisi
       if (status === 'diambil') {
-        console.log('[AUTO-PARK] Slot detected occupied and still locked by me. Auto-confirming.')
+        debug('AUTO-PARK', 'Slot detected occupied and still locked by me. Auto-confirming.')
         handleOccupiedYes()
       }
     })
@@ -1355,7 +1343,7 @@ function watchLockedSlot() {
       }
       
       if (data.status === 'diambil') {
-        console.log('[AUTO-PARK-POLL] Slot detected occupied and still locked by me. Auto-confirming.')
+        debug('AUTO-PARK-POLL', 'Slot detected occupied and still locked by me. Auto-confirming.')
         handleOccupiedYes()
       }
     }
@@ -1363,7 +1351,7 @@ function watchLockedSlot() {
 }
 
 async function handleStolen() {
-  console.log('🚨 Slot stolen! Initiating auto-reroute.')
+  debug('STOLEN', '🚨 Slot stolen! Initiating auto-reroute.')
   clearIdleTimer()
   if (slotPollInterval) clearInterval(slotPollInterval)
   if (slotWatchChannel) supabase.removeChannel(slotWatchChannel)
@@ -1520,7 +1508,7 @@ async function handleOccupiedDifferentSlot() {
     session.value = { slot: { name: targetSlot.name }, entry_time: now }
     differentSlotInput.value = ''
     
-    console.log('[DIFFERENT-SLOT] Successfully parked in', targetSlot.name)
+    debug('DIFFERENT-SLOT', 'Successfully parked in', targetSlot.name)
   } catch (err) {
     console.error('Error in handleOccupiedDifferentSlot:', err)
     alert('Gagal mengonfirmasi slot. Silakan coba lagi.')
@@ -1563,7 +1551,7 @@ async function debugSimulateStolen() {
     .from('parking_slots')
     .update({ locked_by: null, status: 'diambil', updated_at: new Date().toISOString() })
     .eq('id', lockedSlot.value.id)
-  console.log('[DEBUG] Slot stolen simulated. Waiting for handleStolen...')
+  debug('DEBUG', 'Slot stolen simulated. Waiting for handleStolen...')
 }
 
 function debugSimulateIdle() {
@@ -1571,7 +1559,7 @@ function debugSimulateIdle() {
   if (ticket.value?.status !== 'active') return
   clearIdleTimer()
   showIdlePopup.value = true
-  idleCountdown.value = 60
+  idleCountdown.value = IDLE_COUNTDOWN_SECONDS
   if (idleCountdownTimer) clearInterval(idleCountdownTimer)
   idleCountdownTimer = setInterval(() => {
     idleCountdown.value--
@@ -1588,7 +1576,7 @@ async function debugUnlockAll() {
   
   lockedSlot.value = null
   await fetchAllSlots()
-  console.log('[DEBUG] All slots unlocked & set available')
+  debug('DEBUG', 'All slots unlocked & set available')
 }
 
 async function debugResetTicket() {
@@ -1641,7 +1629,7 @@ async function debugResetTicket() {
   }
   startTimer(now)
   
-  console.log('[DEBUG] Full reset done. Locked:', lockedSlot.value?.name)
+  debug('DEBUG', 'Full reset done. Locked:', lockedSlot.value?.name)
 }
 
 function toggleFakeGps() {
@@ -1662,49 +1650,37 @@ function toggleFakeGps() {
 }
 
 onMounted(async () => {
-  // Ambil nama aplikasi dan favicon untuk tampilan awal
-  const { data } = await supabase.from('settings').select('key, value')
-  if (data) {
-    data.forEach(s => {
-      if (s.key === 'app_name') {
-        appName.value = s.value || 'SmartPark'
-        document.title = appName.value + ' — Panduan Parkir'
+  // Apply a single (key, value) pair from `settings`. Reused for both the
+  // initial fetch and the realtime channel callback so they cannot drift apart.
+  function applySettingsKey(key, value) {
+    if (key === 'app_name') {
+      appName.value = value || 'SmartPark'
+      applyTitle(appName.value, '— Panduan Parkir')
+    } else if (key === 'app_favicon' && value) {
+      applyFavicon(value)
+    } else if (key === 'idle_timeout') {
+      idleTimeout.value = parseInt(value) || 20
+      // Restart idle timer kalau ticket lagi active
+      if (ticket.value?.status === 'active' && lockedSlot.value) {
+        startIdleTimer()
       }
-      if (s.key === 'app_favicon' && s.value) {
-        let link = document.querySelector("link[rel~='icon']")
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-        link.href = s.value
-      }
-      if (s.key === 'idle_timeout') idleTimeout.value = parseInt(s.value) || 20
-      if (s.key === 'exit_cooldown') exitCooldownMinutes.value = parseInt(s.value) || 5
-      if (s.key === 'map_engine') mapEngine.value = s.value || 'maplibre'
-      if (s.key === 'nav_line_color') navLineColor.value = s.value || '#4285F4'
-    })
+    } else if (key === 'exit_cooldown') {
+      exitCooldownMinutes.value = parseInt(value) || 5
+    } else if (key === 'map_engine') {
+      mapEngine.value = value || 'maplibre'
+    } else if (key === 'nav_line_color') {
+      navLineColor.value = value || '#4285F4'
+    }
   }
 
-  // Realtime settings listener
+  // Ambil nama aplikasi dan favicon untuk tampilan awal
+  const { data } = await supabase.from('settings').select('key, value')
+  if (data) data.forEach(s => applySettingsKey(s.key, s.value))
+
+  // Realtime settings listener — same dispatcher, no logic drift.
   settingsChannel = supabase.channel('public:settings')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, payload => {
-      const { key, value } = payload.new
-      if (key === 'app_name') {
-        appName.value = value || 'SmartPark'
-        document.title = appName.value + ' — Panduan Parkir'
-      }
-      if (key === 'app_favicon' && value) {
-        let link = document.querySelector("link[rel~='icon']")
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link) }
-        link.href = value
-      }
-      if (key === 'idle_timeout') {
-        idleTimeout.value = parseInt(value) || 20
-        // Restart idle timer if active
-        if (ticket.value?.status === 'active' && lockedSlot.value) {
-          startIdleTimer()
-        }
-      }
-      if (key === 'exit_cooldown') exitCooldownMinutes.value = parseInt(value) || 5
-      if (key === 'map_engine') mapEngine.value = value || 'maplibre'
-      if (key === 'nav_line_color') navLineColor.value = value || '#4285F4'
+      applySettingsKey(payload.new.key, payload.new.value)
     })
     .subscribe()
 

@@ -169,7 +169,12 @@ async function connect() {
 }
 
 function disconnect() {
-  if (mqttClient) { mqttClient.end(true); mqttClient = null }
+  return new Promise((resolve) => {
+    if (!mqttClient) { resolve(); return }
+    const client = mqttClient
+    mqttClient = null
+    client.end(true, {}, () => resolve())
+  })
 }
 
 // ===== POLL SETTINGS & RECONNECT =====
@@ -183,7 +188,7 @@ async function pollSettingsAndReconnect() {
     await connect()
   } else if (!shouldBeEnabled && enabled) {
     enabled = false
-    disconnect()
+    await disconnect()
     await updateStatus('offline')
     await log('info', 'Bridge DISABLED (dimatikan dari admin)')
   }
@@ -192,7 +197,7 @@ async function pollSettingsAndReconnect() {
   if (enabled && mqttClient) {
     if (settings.mqtt_broker !== currentBroker || settings.mqtt_username !== currentUsername || settings.mqtt_password !== currentPassword) {
       await log('info', 'MQTT settings changed, reconnecting...')
-      disconnect()
+      await disconnect()
       await connect()
       return
     }
@@ -233,7 +238,7 @@ async function mainLoop() {
 
 async function gracefulShutdown(signal) {
   await log('info', `Bridge shutting down (${signal})`)
-  disconnect()
+  await disconnect()
   await updateStatus('offline')
   process.exit(0)
 }

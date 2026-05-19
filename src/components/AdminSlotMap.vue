@@ -30,8 +30,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
 import { computeSlotCorners, DEFAULT_LAT, DEFAULT_LNG } from '../lib/geo.js'
+import { createLeafletMap } from '../composables/useLeafletMap.js'
 
 const props = defineProps({
   slots: { type: Array, default: () => [] },
@@ -43,7 +43,7 @@ const mapRef = ref(null)
 const isFullscreen = ref(false)
 let map = null
 let slotLayers = []
-let resizeObserver = null
+let mapHandle = null
 
 function toggleFullscreen() {
   isFullscreen.value = !isFullscreen.value
@@ -60,7 +60,7 @@ function initMap() {
 
   // Find center from slots or use props default
   let center = [props.centerLat, props.centerLng]
-  let zoom = 18
+  const zoom = 18
   const slotsWithCoords = props.slots.filter(s => s.lat && s.lng)
   if (slotsWithCoords.length > 0) {
     const avgLat = slotsWithCoords.reduce((sum, s) => sum + parseFloat(s.lat), 0) / slotsWithCoords.length
@@ -68,32 +68,18 @@ function initMap() {
     center = [avgLat, avgLng]
   }
 
-  map = L.map(mapRef.value, {
+  mapHandle = createLeafletMap(mapRef.value, {
     center,
     zoom,
-    zoomControl: true,
     attributionControl: false
   })
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 22
-  }).addTo(map)
-
-  // Fix map setengah abu-abu saat tab dibuka
-  resizeObserver = new ResizeObserver(() => {
-    if (map) map.invalidateSize()
-  })
-  resizeObserver.observe(mapRef.value)
-
-  // Force awal
-  setTimeout(() => { if (map) map.invalidateSize() }, 300)
+  map = mapHandle.map
 
   drawSlots()
 }
 
 onUnmounted(() => {
-  if (resizeObserver) resizeObserver.disconnect()
-  if (map) map.remove()
+  if (mapHandle) mapHandle.destroy()
 })
 
 function recenterMap() {

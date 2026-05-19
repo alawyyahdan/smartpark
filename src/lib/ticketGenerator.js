@@ -1,11 +1,12 @@
 import QRCode from 'qrcode'
 import { jsPDF } from 'jspdf'
+import { formatDateShort, formatTime } from './formatters.js'
 
 /**
  * Generate a unique ticket code
  * Format: PREFIX-YYYYMMDD-XXX-RRRR (e.g. SP-20250424-001-a3f2)
- * @param {number} sequence
- * @param {string} prefix - dari settings (default 'SP')
+ * @param {number} sequence - per-day ticket counter (zero-padded to 3 digits)
+ * @param {string} prefix - ticket prefix from settings.ticket_prefix (default 'SP')
  */
 export function generateTicketCode(sequence, prefix = 'SP') {
   const now = new Date()
@@ -43,13 +44,8 @@ export async function printThermalPDF(ticket, appUrl, appName = 'SmartPark') {
   })
 
   const qrDataUrl = await generateQRDataUrl(ticket.id, appUrl)
-  const now = new Date(ticket.created_at)
-  const dateStr = now.toLocaleDateString('id-ID', {
-    day: '2-digit', month: 'long', year: 'numeric'
-  })
-  const timeStr = now.toLocaleTimeString('id-ID', {
-    hour: '2-digit', minute: '2-digit'
-  })
+  const dateStr = formatDateShort(ticket.created_at)
+  const timeStr = formatTime(ticket.created_at)
 
   // Header
   doc.setFillColor(15, 23, 42)
